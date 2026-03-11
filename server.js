@@ -1,0 +1,489 @@
+#!/usr/bin/env node
+
+/**
+ * The Code Agency- 统一主服务器
+ * 
+ * 功能:
+ * - Web GUI 静态文件服务
+ * - CLI 引擎 API 服务
+ * - 机器人 Webhook 服务
+ * - 任务管理和状态跟踪
+ * - AI 代码生成（集成 Coding Plan）
+ */
+
+const express = require('express');
+const path= require('path');
+const fs = require('fs');
+const EventEmitter = require('events');
+const axios = require('axios').default;
+const CodingPlanService = require('./services/coding-plan');
+const promptTemplates = require('./services/prompt-templates');
+
+// 初始化 Express 应用
+const app = express();
+app.use(express.json());
+
+// 全局事件发射器（用于任务状态更新）
+const taskEmitter = new EventEmitter();
+
+// 任务存储（内存数据库，后续可替换为 SQLite）
+const tasks = new Map();
+
+// 机器人配置（从环境变量读取）
+const robotConfig = {
+ dingtalk: {
+  enabled: process.env.DINGTALK_ENABLED === 'true',
+  webhook: process.env.DINGTALK_WEBHOOK,
+  secret: process.env.DINGTALK_SECRET
+ },
+ feishu: {
+  enabled: process.env.FEISHU_ENABLED === 'true',
+  webhook: process.env.FEISHU_WEBHOOK,
+  secret: process.env.FEISHU_SECRET
+ }
+};
+
+// ==================== 中间件 ====================
+
+// CORS 支持
+app.use((req, res, next) => {
+ res.header('Access-Control-Allow-Origin', '*');
+ res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+ res.header('Access-Control-Allow-Headers', 'Content-Type');
+  if (req.method === 'OPTIONS') {
+   return res.sendStatus(200);
+  }
+  next();
+});
+
+// ==================== Web GUI 静态文件服务 ====================
+
+const guiPath= path.join(__dirname, 'web-gui', 'dist');
+if (fs.existsSync(guiPath)) {
+ app.use(express.static(guiPath));
+ console.log(`✅ Web GUI 服务已启动：${guiPath}`);
+} else {
+ console.warn('⚠️  Web GUI 未找到，请先构建 web-gui');
+}
+
+// ==================== 任务管理 API ====================
+
+// 创建任务
+app.post('/api/tasks', async (req, res) => {
+ const { command, params, options = {} } = req.body;
+  
+ const taskId = `task-${Date.now()}`;
+ const task = {
+    id: taskId,
+   command,
+   params,
+    options,
+    status: 'pending', // pending -> analyzing -> designing -> coding -> testing -> reviewing -> completed
+    progress: 0,
+    logs: [],
+   createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+   outputDir: null,
+    zipUrl: null
+  };
+  
+  tasks.set(taskId, task);
+  
+  // 异步执行任务
+  executeTask(taskId, task);
+  
+ res.json({ success: true, taskId });
+});
+
+// 获取任务列表
+app.get('/api/tasks', (req, res) => {
+ const taskList = Array.from(tasks.values()).sort((a, b) => 
+    new Date(b.createdAt) - new Date(a.createdAt)
+  );
+ res.json(taskList);
+});
+
+// 获取任务详情
+app.get('/api/tasks/:taskId', (req, res) => {
+ const task = tasks.get(req.params.taskId);
+  if (!task) {
+   return res.status(404).json({ error: 'Task not found' });
+  }
+ res.json(task);
+});
+
+// 删除任务
+app.delete('/api/tasks/:taskId', (req, res) => {
+ const deleted= tasks.delete(req.params.taskId);
+ res.json({ success: deleted });
+});
+
+// ==================== 任务执行引擎 ====================
+
+/**
+ * 真实的 AI 代码生成任务执行引擎
+ */
+async function executeTask(taskId, task) {
+ const codingPlan = new CodingPlanService({
+  ali: {
+   enabled: process.env.ALI_ENABLED === 'true',
+   apiKey: process.env.ALI_API_KEY,
+   endpoint: process.env.ALI_ENDPOINT,
+  planType: process.env.ALI_PLAN_TYPE || 'qwen-coder-plus'
+  },
+ tencent: {
+  enabled: process.env.TENCENT_ENABLED === 'true',
+  secretId: process.env.TENCENT_SECRET_ID,
+  secretKey: process.env.TENCENT_SECRET_KEY,
+  endpoint: process.env.TENCENT_ENDPOINT,
+  planType: process.env.TENCENT_PLAN_TYPE || 'hunyuan-code-pro'
+  },
+  baidu: {
+  enabled: process.env.BAIDU_ENABLED === 'true',
+  apiKey: process.env.BAIDU_API_KEY,
+  secretKey: process.env.BAIDU_SECRET_KEY,
+  endpoint: process.env.BAIDU_ENDPOINT,
+  planType: process.env.BAIDU_PLAN_TYPE || 'ernie-bot-code-pro'
+  },
+  custom: {
+  enabled: process.env.CUSTOM_ENABLED === 'true',
+  apiKey: process.env.CUSTOM_API_KEY,
+  endpoint: process.env.CUSTOM_ENDPOINT,
+  planType: process.env.CUSTOM_PLAN_TYPE
+  }
+ });
+
+ try {
+  updateTaskStatus(taskId, 'analyzing', 10);
+  addLog(taskId, '📋 开始分析任务...');
+  
+  // 阶段 1: 需求分析
+  updateTaskStatus(taskId, 'analyzing', 20);
+  addLog(taskId, '📝 需求分析中...');
+  
+ const requirementsPrompt = promptTemplates.getTemplate(
+  'requirementsAnalysis', 
+ task.params || task.command
+  );
+  
+  let aiResponse = await codingPlan.generateCode(requirementsPrompt, task.options?.techStack || []);
+  addLog(taskId, '✅ 需求分析完成');
+  
+  // 阶段 2: 设计文档
+  updateTaskStatus(taskId, 'designing', 40);
+  addLog(taskId, '🎨 设计文档生成中...');
+  
+ const designPrompt = promptTemplates.getTemplate('designDocument', aiResponse);
+  aiResponse = await codingPlan.generateCode(designPrompt, task.options?.techStack || []);
+  addLog(taskId, '✅ 设计文档完成');
+  
+  // 阶段 3: 代码生成（核心）
+  updateTaskStatus(taskId, 'coding',60);
+  addLog(taskId, '💻 代码编写中...');
+  
+  // 根据命令类型选择合适的模板
+  let codeGenerationPrompt;
+  if (task.command.includes('game') || task.params?.toLowerCase().includes('游戏')) {
+ codeGenerationPrompt = promptTemplates.getTemplate('html5Game', task.params || task.command);
+  } else if (task.command.includes('react') || task.command.includes('component')) {
+ codeGenerationPrompt = promptTemplates.getTemplate('reactComponent', task.params || task.command);
+  } else if (task.command.includes('api') || task.command.includes('backend')) {
+ codeGenerationPrompt = promptTemplates.getTemplate('nodejsAPI', task.params || task.command);
+  } else {
+ codeGenerationPrompt = promptTemplates.getTemplate('codeGeneration', aiResponse, task.options?.techStack || []);
+  }
+  
+ const generatedCode = await codingPlan.generateCode(codeGenerationPrompt, task.options?.techStack || []);
+  addLog(taskId, '✅ 代码生成完成');
+  
+  // 阶段 4: 测试生成
+  updateTaskStatus(taskId, 'testing', 80);
+  addLog(taskId, '🧪 测试执行中...');
+  
+ const testPrompt = promptTemplates.getTemplate('testGeneration', generatedCode);
+ const testCode = await codingPlan.generateCode(testPrompt);
+  addLog(taskId, '✅ 测试生成完成');
+  
+  // 阶段 5: 代码审查
+  updateTaskStatus(taskId, 'reviewing', 90);
+  addLog(taskId, '🔍 代码审查中...');
+  
+ const reviewPrompt = promptTemplates.getTemplate('codeReview', generatedCode);
+ const reviewResult = await codingPlan.generateCode(reviewPrompt);
+  addLog(taskId, '✅ 代码审查完成');
+  
+  // 创建输出目录并保存生成的文件
+ const outputDir = path.join(__dirname, '..', 'generated-code', taskId);
+  fs.mkdirSync(outputDir, { recursive: true });
+  
+  // 解析生成的代码并保存为文件
+  saveGeneratedFiles(generatedCode, outputDir);
+  
+  // 保存测试文件
+  fs.writeFileSync(path.join(outputDir, 'tests.test.js'), testCode);
+  
+  // 保存项目说明
+  fs.writeFileSync(
+ path.join(outputDir, 'README.md'),
+  `# 任务 ${taskId}\n\n**命令**: ${task.command}\n**描述**: ${task.params}\n\n## 生成的代码\n\n这是通过 AI 自动生成的代码。\n\n## 使用说明\n\n请查看具体文件的注释了解使用方法。\n\n## 代码审查结果\n\n${reviewResult}`
+  );
+  
+  updateTaskStatus(taskId, 'completed', 100);
+  addLog(taskId, `✅ 任务完成！代码已保存到：${outputDir}`);
+  
+  task.outputDir = outputDir;
+ task.zipUrl = `/api/tasks/${taskId}/download`;
+ task.updatedAt = new Date().toISOString();
+  
+  // 触发完成事件（用于推送通知）
+ taskEmitter.emit('taskCompleted', task);
+  
+  // 发送机器人通知
+ sendNotification(task, 'completed');
+  
+ } catch (error) {
+  updateTaskStatus(taskId, 'failed', 0);
+  addLog(taskId, `❌ 任务失败：${error.message}`);
+ taskEmitter.emit('taskFailed', { ...task, error: error.message });
+  
+  // 发送失败通知
+  sendNotification({ ...task, error: error.message }, 'failed');
+ }
+}
+
+/**
+ * 解析 AI 生成的代码并保存为文件
+ */
+function saveGeneratedFiles(codeContent, outputDir) {
+ // 匹配代码块格式：文件名：path/to/file.js\n```\ncode\n```
+ const fileRegex = /文件名：([\w\-./\s]+)\n```([\s\S]*?)```/g;
+ let match;
+ const files = [];
+
+ while ((match = fileRegex.exec(codeContent)) !== null) {
+  files.push({
+ path: match[1].trim(),
+ content: match[2].trim()
+  });
+ }
+
+ // 如果没有找到带文件名的代码块，尝试保存整个内容为单个文件
+ if (files.length === 0) {
+  // 检查是否是 HTML
+  if (codeContent.includes('<!DOCTYPE html>') || codeContent.includes('<html')) {
+  fs.writeFileSync(path.join(outputDir, 'index.html'), codeContent);
+  } else {
+  fs.writeFileSync(path.join(outputDir, 'main.js'), codeContent);
+  }
+ return;
+ }
+
+ // 保存每个文件
+ files.forEach(file => {
+ const fullPath= path.join(outputDir, file.path);
+ const dir = path.dirname(fullPath);
+  
+  // 创建目录
+  fs.mkdirSync(dir, { recursive: true });
+  
+  // 写入文件
+  fs.writeFileSync(fullPath, file.content);
+ });
+}
+
+function updateTaskStatus(taskId, status, progress) {
+ const task = tasks.get(taskId);
+  if (task) {
+   task.status = status;
+   task.progress = progress;
+   task.updatedAt = new Date().toISOString();
+   taskEmitter.emit('taskUpdate', task);
+  }
+}
+
+function addLog(taskId, message) {
+ const task = tasks.get(taskId);
+  if (task) {
+   task.logs.push({
+      timestamp: new Date().toISOString(),
+    message
+    });
+   taskEmitter.emit('taskUpdate', task);
+  }
+}
+
+// ==================== 机器人通知推送 ====================
+
+/**
+ * 发送钉钉通知
+ */
+async function sendDingTalkNotification(task, eventType) {
+ if (!robotConfig.dingtalk.enabled || !robotConfig.dingtalk.webhook) {
+ return;
+ }
+
+const messages = {
+  started: {
+    title: '任务已启动',
+   text: `## 🚀 任务已启动\n\n- **任务 ID**: ${task.id}\n- **命令**: ${task.command}\n- **描述**: ${task.params}`
+  },
+ completed: {
+    title: '任务已完成',
+   text: `## ✅ 任务已完成\n\n- **任务 ID**: ${task.id}\n- **命令**: ${task.command}\n- **输出目录**: ${task.outputDir || 'N/A'}\n\n请及时查看生成的代码。`
+  },
+  failed: {
+    title: '任务执行失败',
+   text: `## ❌ 任务执行失败\n\n- **任务 ID**: ${task.id}\n- **命令**: ${task.command}\n- **错误**: ${task.error}\n\n请及时排查问题。`
+  }
+};
+
+const message = messages[eventType];
+ if (!message) return;
+
+ try {
+  await axios.post(robotConfig.dingtalk.webhook, {
+    msgtype: 'markdown',
+    markdown: {
+      title: message.title,
+     text: message.text
+    }
+  });
+ console.log(`✅ 钉钉通知已发送：${task.id} - ${eventType}`);
+} catch (error) {
+ console.error('❌ 发送钉钉通知失败:', error.message);
+ }
+}
+
+/**
+ * 发送飞书通知
+ */
+async function sendFeishuNotification(task, eventType) {
+ if (!robotConfig.feishu.enabled || !robotConfig.feishu.webhook) {
+ return;
+ }
+
+const messages = {
+  started: {
+    title: '🚀 任务已启动',
+ content: `**任务 ID**: ${task.id}\n**命令**: ${task.command}\n**描述**: ${task.params}`
+  },
+ completed: {
+    title: '✅ 任务已完成',
+ content: `**任务 ID**: ${task.id}\n**命令**: ${task.command}\n**输出目录**: ${task.outputDir || 'N/A'}\n\n请及时查看生成的代码。`
+  },
+  failed: {
+    title: '❌ 任务执行失败',
+ content: `**任务 ID**: ${task.id}\n**命令**: ${task.command}\n**错误**: ${task.error}\n\n请及时排查问题。`
+  }
+};
+
+const message = messages[eventType];
+ if (!message) return;
+
+ try {
+  await axios.post(robotConfig.feishu.webhook, {
+    msg_type: 'interactive',
+    card: {
+      header: {
+        title: { tag: 'plain_text', content: message.title },
+       template: eventType === 'failed' ? 'red' : 'blue'
+      },
+      elements: [
+        {
+        tag: 'markdown',
+       content: message.content
+        }
+      ]
+    }
+  });
+ console.log(`✅ 飞书通知已发送：${task.id} - ${eventType}`);
+} catch (error) {
+ console.error('❌ 发送飞书通知失败:', error.message);
+ }
+}
+
+/**
+ * 统一推送通知
+ */
+function sendNotification(task, eventType) {
+ // 并行发送到所有启用的平台
+ Promise.all([
+  sendDingTalkNotification(task, eventType),
+  sendFeishuNotification(task, eventType)
+ ]).catch(err => {
+ console.error('发送通知时出错:', err);
+ });
+}
+
+// ==================== 代码下载 API ====================
+
+const archiver = require('archiver');
+
+app.get('/api/tasks/:taskId/download', (req, res) => {
+ const task = tasks.get(req.params.taskId);
+  if (!task || !task.outputDir) {
+   return res.status(404).json({ error: 'Task or output not found' });
+  }
+  
+ const archive = archiver('zip', { zlib: { level: 9 } });
+  
+  archive.on('error', (err) => {
+    throw err;
+  });
+  
+ res.attachment(`${task.id}-code.zip`);
+  archive.pipe(res);
+  archive.directory(task.outputDir, false);
+  archive.finalize();
+});
+
+// ==================== WebSocket 实时日志（简化版用 SSE） ====================
+
+app.get('/api/tasks/:taskId/logs/stream', (req, res) => {
+ const taskId = req.params.taskId;
+ res.setHeader('Content-Type', 'text/event-stream');
+ res.setHeader('Cache-Control', 'no-cache');
+ res.setHeader('Connection', 'keep-alive');
+  
+ const sendUpdate = (task) => {
+   if (task.id === taskId) {
+     res.write(`data: ${JSON.stringify(task)}\n\n`);
+    }
+  };
+  
+  taskEmitter.on('taskUpdate', sendUpdate);
+  
+ res.on('close', () => {
+   taskEmitter.removeListener('taskUpdate', sendUpdate);
+  });
+  
+  // 立即发送当前状态
+ const task = tasks.get(taskId);
+  if (task) {
+   res.write(`data: ${JSON.stringify(task)}\n\n`);
+  }
+});
+
+// ==================== 启动服务器 ====================
+
+const PORT = process.env.PORT || 3000;
+
+app.listen(PORT, () => {
+ console.log('\n========================================');
+ console.log('🚀 The Code Agency - 统一服务器');
+ console.log('========================================\n');
+ console.log(`📡 服务已启动`);
+ console.log(`   端口：${PORT}`);
+ console.log(`   URL: http://localhost:${PORT}\n`);
+ console.log('📋 API 端点:');
+ console.log(`  POST /api/tasks          - 创建任务`);
+ console.log(`  GET  /api/tasks          - 获取任务列表`);
+ console.log(`  GET  /api/tasks/:id      - 获取任务详情`);
+ console.log(`  GET  /api/tasks/:id/download - 下载代码包`);
+ console.log(`  GET  /api/tasks/:id/logs/stream - 实时日志流\n`);
+ console.log('💡 提示:');
+ console.log(`  访问 Web GUI: http://localhost:${PORT}\n`);
+ console.log('========================================\n');
+});
+
+module.exports = app;

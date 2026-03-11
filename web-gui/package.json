@@ -1,0 +1,27 @@
+{
+  "name": "the-code-agency-web",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "description": "The Code Agency Web GUI - 可视化工作流操作平台",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@ant-design/icons": "^6.1.0",
+    "antd": "^6.3.2",
+    "axios": "^1.13.6",
+    "dayjs": "^1.11.19",
+    "file-saver": "^2.0.5",
+    "jszip": "^3.10.1",
+    "react": "^19.2.4",
+    "react-dom": "^19.2.4",
+    "react-router-dom": "^7.13.1"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^5.1.4",
+    "vite": "^7.3.1"
+  }
+}
