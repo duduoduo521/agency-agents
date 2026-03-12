@@ -170,11 +170,76 @@ app.get('/api/tasks/:taskId', (req, res) => {
 
 // 删除任务
 app.delete('/api/tasks/:taskId', (req, res) => {
- const deleted= tasks.delete(req.params.taskId);
- if (deleted) {
-   removeTaskFromDisk(req.params.taskId); // 从磁盘删除
+ const taskId = req.params.taskId;
+ const task = tasks.get(taskId);
+ 
+ if (!task) {
+   return res.status(404).json({ error: 'Task not found' });
  }
- res.json({ success: deleted });
+ 
+ // 如果任务正在运行，需要特殊处理
+ const isRunning = ['analyzing', 'designing', 'coding', 'testing', 'reviewing'].includes(task.status);
+ 
+ if (isRunning) {
+   // 标记任务为已取消，而不是直接删除
+   task.status = 'cancelled';
+   task.progress = 0;
+   task.updatedAt = new Date().toISOString();
+   task.logs.push({
+     timestamp: new Date().toISOString(),
+     message: '⚠️ 任务已被用户取消'
+   });
+   
+   // 保存更新后的任务状态
+   tasks.set(taskId, task);
+   saveTaskToDisk(taskId, task);
+   taskEmitter.emit('taskUpdate', task);
+   
+   // 注意：由于JavaScript是单线程的，无法真正"停止"正在执行的异步操作
+   // 但可以通过状态检查在后续步骤中跳过处理
+ } else {
+   // 直接删除非运行中的任务
+   const deleted = tasks.delete(taskId);
+   if (deleted) {
+     removeTaskFromDisk(taskId); // 从磁盘删除
+   }
+ }
+ 
+ res.json({ success: true, message: isRunning ? 'Task cancelled' : 'Task deleted' });
+});
+
+// 手动重试任务
+app.post('/api/tasks/:taskId/retry', (req, res) => {
+ const taskId = req.params.taskId;
+ const task = tasks.get(taskId);
+ 
+ if (!task) {
+   return res.status(404).json({ error: 'Task not found' });
+ }
+ 
+ // 只允许重试失败的任务
+ if (task.status !== 'failed') {
+   return res.status(400).json({ error: 'Only failed tasks can be retried' });
+ }
+ 
+ // 重置任务状态
+ task.status = 'pending';
+ task.progress = 0;
+ task.retries = 0; // 重置重试次数
+ task.logs = []; // 清空日志或保留原有日志
+ task.updatedAt = new Date().toISOString();
+ 
+ // 保存到内存和磁盘
+ tasks.set(taskId, task);
+ saveTaskToDisk(taskId, task);
+ 
+ // 触发任务开始事件
+ taskEmitter.emit('taskStarted', task);
+ 
+ // 异步执行任务
+ executeTask(taskId, task);
+ 
+ res.json({ success: true, message: 'Task retry started' });
 });
 
 // ==================== 任务执行引擎 ====================
@@ -183,6 +248,13 @@ app.delete('/api/tasks/:taskId', (req, res) => {
  * 真实的 AI 代码生成任务执行引擎
  */
 async function executeTask(taskId, task) {
+ // 检查任务是否已被取消或删除
+ const currentTask = tasks.get(taskId);
+ if (!currentTask || currentTask.status === 'cancelled') {
+   console.log(`任务 ${taskId} 已被取消或删除，跳过执行`);
+   return;
+ }
+ 
  const codingPlan = new CodingPlanService({
   ali: {
    enabled: process.env.ALI_ENABLED === 'true',
@@ -315,15 +387,31 @@ async function executeTask(taskId, task) {
   sendNotification(completedTask, 'completed');
   
  } catch (error) {
+  // 检查任务是否已被取消
+  const currentTask = tasks.get(taskId);
+  if (!currentTask || currentTask.status === 'cancelled') {
+    console.log(`任务 ${taskId} 在错误处理期间已被取消`);
+    return;
+  }
+  
   // 检查是否可以重试
   if (task.retries < task.maxRetries) {
     const retryTask = tasks.get(taskId);
-    retryTask.retries++;
-    addLog(taskId, `⚠️  任务失败，正在重试 (${retryTask.retries}/${task.maxRetries})：${error.message}`);
-    
-    // 延迟后重试
-    setTimeout(() => executeTask(taskId, retryTask), 3000);
-    return;
+    // 添加空值检查，确保任务仍然存在且未被取消
+    if (retryTask && retryTask.status !== 'cancelled') {
+      retryTask.retries++;
+      addLog(taskId, `⚠️  任务失败，正在重试 (${retryTask.retries}/${task.maxRetries})：${error.message}`);
+      
+      // 更新任务到磁盘
+      saveTaskToDisk(taskId, retryTask);
+      
+      // 延迟后重试
+      setTimeout(() => executeTask(taskId, retryTask), 3000);
+      return;
+    } else {
+      // 任务不存在或已被取消，直接标记为失败
+      console.error(`任务 ${taskId} 不存在或已被取消，无法重试`);
+    }
   }
   
   updateTaskStatus(taskId, 'failed', 0);
@@ -525,6 +613,48 @@ function sendNotification(task, eventType) {
 
 // ==================== 代码下载 API ====================
 
+// 健康检查 - 大模型配置状态
+app.get('/api/health/llm-config', (req, res) => {
+  // 检查各种大模型的配置状态
+  const llmConfig = {
+    ali: {
+      enabled: process.env.ALI_ENABLED === 'true',
+      configured: process.env.ALI_ENABLED === 'true' && 
+                 process.env.ALI_API_KEY && 
+                 process.env.ALI_ENDPOINT
+    },
+    tencent: {
+      enabled: process.env.TENCENT_ENABLED === 'true',
+      configured: process.env.TENCENT_ENABLED === 'true' && 
+                  process.env.TENCENT_SECRET_ID && 
+                  process.env.TENCENT_SECRET_KEY && 
+                  process.env.TENCENT_ENDPOINT
+    },
+    baidu: {
+      enabled: process.env.BAIDU_ENABLED === 'true',
+      configured: process.env.BAIDU_ENABLED === 'true' && 
+                  process.env.BAIDU_API_KEY && 
+                  process.env.BAIDU_SECRET_KEY && 
+                  process.env.BAIDU_ENDPOINT
+    },
+    custom: {
+      enabled: process.env.CUSTOM_ENABLED === 'true',
+      configured: process.env.CUSTOM_ENABLED === 'true' && 
+                  process.env.CUSTOM_API_KEY && 
+                  process.env.CUSTOM_ENDPOINT
+    }
+  };
+
+  // 检查是否有至少一个大模型已配置
+  const hasConfiguredLlm = Object.values(llmConfig).some(provider => provider.configured);
+
+  res.json({
+    configured: hasConfiguredLlm,
+    providers: llmConfig,
+    timestamp: new Date().toISOString()
+  });
+});
+
 const archiver = require('archiver');
 
 app.get('/api/tasks/:taskId/download', (req, res) => {
@@ -587,6 +717,8 @@ app.listen(PORT, () => {
  console.log(`  POST /api/tasks          - 创建任务`);
  console.log(`  GET  /api/tasks          - 获取任务列表`);
  console.log(`  GET  /api/tasks/:id      - 获取任务详情`);
+ console.log(`  POST /api/tasks/:id/retry - 重试失败任务`);
+ console.log(`  DELETE /api/tasks/:id    - 删除任务`);
  console.log(`  GET  /api/tasks/:id/download - 下载代码包`);
  console.log(`  GET  /api/tasks/:id/logs/stream - 实时日志流\n`);
  console.log('💡 提示:');

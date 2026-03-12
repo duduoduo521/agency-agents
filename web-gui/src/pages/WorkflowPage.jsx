@@ -93,6 +93,8 @@ const WorkflowPage = () => {
         return '发布准备';
       case 'failed':
         return '问题诊断';
+      case 'cancelled':
+        return '已取消';
       default:
         return '未知阶段';
     }
@@ -124,12 +126,14 @@ const WorkflowPage = () => {
           running: 'blue',
           completed: 'green',
           failed: 'red',
+          cancelled: 'volcano'
         };
         const textMap = {
           pending: '待处理',
           running: '进行中',
           completed: '已完成',
           failed: '失败',
+          cancelled: '已取消'
         };
         return <Tag color={colorMap[status]}>{textMap[status]}</Tag>;
       },

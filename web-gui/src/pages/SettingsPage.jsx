@@ -14,6 +14,12 @@ const SettingsPage = () => {
   const [testingPlatform, setTestingPlatform] = useState(null);
   const [testLoading, setTestLoading] = useState(false);
   const [settings, setSettings] = useState({});
+  
+  // Coding Plan 启用状态管理
+  const [aliEnabled, setAliEnabled] = useState(false);
+  const [tencentEnabled, setTencentEnabled] = useState(false);
+  const [baiduEnabled, setBaiduEnabled] = useState(false);
+  const [customEnabled, setCustomEnabled] = useState(false);
 
   // 加载设置
   const loadSettings = async () => {
@@ -49,7 +55,8 @@ const SettingsPage = () => {
         feishuSecret: loadedSettings.feishuSecret || ''
       });
       
-      llmForm.setFieldsValue({
+      // 设置LLM表单值和状态
+      const llmSettings = {
         aliEnabled: loadedSettings.aliEnabled || false,
         aliApiKey: loadedSettings.aliApiKey || '',
         aliEndpoint: loadedSettings.aliEndpoint || 'https://dashscope.aliyuncs.com/api/v1',
@@ -69,7 +76,13 @@ const SettingsPage = () => {
         customApiKey: loadedSettings.customApiKey || '',
         customEndpoint: loadedSettings.customEndpoint || '',
         customPlanType: loadedSettings.customPlanType || ''
-      });
+      };
+      
+      llmForm.setFieldsValue(llmSettings);
+      setAliEnabled(llmSettings.aliEnabled);
+      setTencentEnabled(llmSettings.tencentEnabled);
+      setBaiduEnabled(llmSettings.baiduEnabled);
+      setCustomEnabled(llmSettings.customEnabled);
     } catch (error) {
       console.error('加载设置失败:', error);
       message.error('加载设置失败，使用默认值');
@@ -78,7 +91,12 @@ const SettingsPage = () => {
       setSettings(getDefaultSettings());
       form.setFieldsValue(getDefaultSettings());
       robotForm.setFieldsValue(getDefaultRobotSettings());
-      llmForm.setFieldsValue(getDefaultLlmSettings());
+      const defaultLlm = getDefaultLlmSettings();
+      llmForm.setFieldsValue(defaultLlm);
+      setAliEnabled(defaultLlm.aliEnabled);
+      setTencentEnabled(defaultLlm.tencentEnabled);
+      setBaiduEnabled(defaultLlm.baiduEnabled);
+      setCustomEnabled(defaultLlm.customEnabled);
     }
   };
 
@@ -105,7 +123,7 @@ const SettingsPage = () => {
   const getDefaultLlmSettings = () => ({
     aliEnabled: false,
     aliApiKey: '',
-    aliEndpoint: 'https://dashscope.aliyuncs.com/api/v1',
+    aliEndpoint: 'https://coding.dashscope.aliyuncs.com/v1',
     aliPlanType: 'qwen-coder-plus',
     tencentEnabled: false,
     tencentSecretId: '',
@@ -222,7 +240,18 @@ const SettingsPage = () => {
           {
             key: 'llm',
             label: <span><ApiOutlined />Coding Plan 配置</span>,
-            children: <CodingPlanSettings form={llmForm} onFinish={onLlmFinish} />
+            children: <CodingPlanSettings 
+              form={llmForm} 
+              onFinish={onLlmFinish}
+              aliEnabled={aliEnabled}
+              setAliEnabled={setAliEnabled}
+              tencentEnabled={tencentEnabled}
+              setTencentEnabled={setTencentEnabled}
+              baiduEnabled={baiduEnabled}
+              setBaiduEnabled={setBaiduEnabled}
+              customEnabled={customEnabled}
+              setCustomEnabled={setCustomEnabled}
+            />
           },
           {
             key: 'security',
@@ -382,7 +411,18 @@ const RobotSettings = ({ form, onFinish, onTest, testing, loading }) => (
 );
 
 // ==================== Coding Plan 配置组件 ====================
-const CodingPlanSettings = ({ form, onFinish }) => (
+const CodingPlanSettings = ({ 
+  form, 
+  onFinish,
+  aliEnabled,
+  setAliEnabled,
+  tencentEnabled,
+  setTencentEnabled,
+  baiduEnabled,
+  setBaiduEnabled,
+  customEnabled,
+  setCustomEnabled
+}) => (
   <Card>
     <Alert
       message="Coding Plan 配置"
@@ -396,45 +436,62 @@ const CodingPlanSettings = ({ form, onFinish }) => (
       <Divider orientation="left">阿里云百炼 - 通义千问 Coding Plan</Divider>
       
       <Form.Item label="启用" name="aliEnabled" valuePropName="checked">
-        <Switch />
+        <Switch 
+          checked={aliEnabled}
+          onChange={setAliEnabled}
+        />
       </Form.Item>
 
       <Form.Item label="API Key" name="aliApiKey" tooltip="在阿里云百炼平台获取的 API Key">
-        <Input.Password placeholder="请输入阿里云 API Key" disabled={!form.getFieldValue('aliEnabled')} />
+        <Input.Password placeholder="请输入阿里云 API Key" disabled={!aliEnabled} />
       </Form.Item>
 
-      <Form.Item label="API Endpoint" name="aliEndpoint" initialValue="https://dashscope.aliyuncs.com/api/v1">
-        <Input placeholder="https://dashscope.aliyuncs.com/api/v1" disabled={!form.getFieldValue('aliEnabled')} />
+      <Form.Item 
+        label="Base URL" 
+        name="aliEndpoint" 
+        initialValue="https://coding.dashscope.aliyuncs.com/v1"
+        tooltip="阿里云百炼 Coding Plan 的基础URL"
+      >
+        <Input 
+          placeholder="https://coding.dashscope.aliyuncs.com/v1" 
+          disabled={!aliEnabled} 
+        />
       </Form.Item>
 
-      <Form.Item label="套餐类型" name="aliPlanType" tooltip="选择通义千问 Coding Plan 类型">
-        <Select disabled={!form.getFieldValue('aliEnabled')}>
-          <Select.Option value="qwen-coder-plus">Qwen-Coder-Plus (通义灵码专业版)</Select.Option>
-          <Select.Option value="qwen-coder-turbo">Qwen-Coder-Turbo (通义灵码加速版)</Select.Option>
-          <Select.Option value="qwen2.5-coder-32b">Qwen2.5-Coder-32B (通义灵码标准版)</Select.Option>
-        </Select>
+      <Form.Item 
+        label="模型名称" 
+        name="aliPlanType" 
+        tooltip="输入具体的 Coding Plan 模型名称，如 qwen-coder-plus、qwen-coder-turbo 等"
+      >
+        <Input 
+          placeholder="例如：qwen-coder-plus" 
+          disabled={!aliEnabled} 
+        />
       </Form.Item>
 
       <Divider orientation="left">腾讯云智能创作 - 混元 Coding Plan</Divider>
       
       <Form.Item label="启用" name="tencentEnabled" valuePropName="checked">
-        <Switch />
+        <Switch 
+          checked={tencentEnabled}
+          onChange={setTencentEnabled}
+        />
       </Form.Item>
 
       <Form.Item label="SecretId" name="tencentSecretId" tooltip="在腾讯云控制台获取的 SecretId">
-        <Input.Password placeholder="请输入腾讯云 SecretId" disabled={!form.getFieldValue('tencentEnabled')} />
+        <Input.Password placeholder="请输入腾讯云 SecretId" disabled={!tencentEnabled} />
       </Form.Item>
 
       <Form.Item label="SecretKey" name="tencentSecretKey" tooltip="在腾讯云控制台获取的 SecretKey">
-        <Input.Password placeholder="请输入腾讯云 SecretKey" disabled={!form.getFieldValue('tencentEnabled')} />
+        <Input.Password placeholder="请输入腾讯云 SecretKey" disabled={!tencentEnabled} />
       </Form.Item>
 
       <Form.Item label="API Endpoint" name="tencentEndpoint" initialValue="https://hunyuan.tencentcloudapi.com">
-        <Input placeholder="https://hunyuan.tencentcloudapi.com" disabled={!form.getFieldValue('tencentEnabled')} />
+        <Input placeholder="https://hunyuan.tencentcloudapi.com" disabled={!tencentEnabled} />
       </Form.Item>
 
       <Form.Item label="套餐类型" name="tencentPlanType" tooltip="选择混元 Coding Plan 类型">
-        <Select disabled={!form.getFieldValue('tencentEnabled')}>
+        <Select disabled={!tencentEnabled}>
           <Select.Option value="hunyuan-code-pro">HunYuan-Code-Pro (混元代码专业版)</Select.Option>
           <Select.Option value="hunyuan-code-lite">HunYuan-Code-Lite (混元代码轻量版)</Select.Option>
         </Select>
@@ -443,23 +500,26 @@ const CodingPlanSettings = ({ form, onFinish }) => (
       <Divider orientation="left">百度智能云千帆 - 文心一言 Coding Plan</Divider>
       
       <Form.Item label="启用" name="baiduEnabled" valuePropName="checked">
-        <Switch />
+        <Switch 
+          checked={baiduEnabled}
+          onChange={setBaiduEnabled}
+        />
       </Form.Item>
 
       <Form.Item label="API Key" name="baiduApiKey" tooltip="在百度智能云千帆平台获取的 API Key">
-        <Input.Password placeholder="请输入百度云 API Key" disabled={!form.getFieldValue('baiduEnabled')} />
+        <Input.Password placeholder="请输入百度云 API Key" disabled={!baiduEnabled} />
       </Form.Item>
 
       <Form.Item label="Secret Key" name="baiduSecretKey" tooltip="在百度智能云千帆平台获取的 Secret Key">
-        <Input.Password placeholder="请输入百度云 Secret Key" disabled={!form.getFieldValue('baiduEnabled')} />
+        <Input.Password placeholder="请输入百度云 Secret Key" disabled={!baiduEnabled} />
       </Form.Item>
 
       <Form.Item label="API Endpoint" name="baiduEndpoint" initialValue="https://aip.baidubce.com/rpc/2.0/ai_custom/v1">
-        <Input placeholder="https://aip.baidubce.com/rpc/2.0/ai_custom/v1" disabled={!form.getFieldValue('baiduEnabled')} />
+        <Input placeholder="https://aip.baidubce.com/rpc/2.0/ai_custom/v1" disabled={!baiduEnabled} />
       </Form.Item>
 
       <Form.Item label="套餐类型" name="baiduPlanType" tooltip="选择文心一言 Coding Plan 类型">
-        <Select disabled={!form.getFieldValue('baiduEnabled')}>
+        <Select disabled={!baiduEnabled}>
           <Select.Option value="ernie-bot-code-pro">ERNIE-Bot-Code-Pro (文心快码专业版)</Select.Option>
           <Select.Option value="ernie-bot-code-lite">ERNIE-Bot-Code-Lite (文心快码轻量版)</Select.Option>
         </Select>
@@ -468,23 +528,26 @@ const CodingPlanSettings = ({ form, onFinish }) => (
       <Divider orientation="left">其他厂商 - 自定义 Coding Plan</Divider>
       
       <Form.Item label="启用" name="customEnabled" valuePropName="checked">
-        <Switch />
+        <Switch 
+          checked={customEnabled}
+          onChange={setCustomEnabled}
+        />
       </Form.Item>
 
       <Form.Item label="平台名称" name="customPlatformName" tooltip="Coding Plan 平台名称">
-        <Input placeholder="例如：讯飞星火、智谱 AI 等" disabled={!form.getFieldValue('customEnabled')} />
+        <Input placeholder="例如：讯飞星火、智谱 AI 等" disabled={!customEnabled} />
       </Form.Item>
 
       <Form.Item label="API Key" name="customApiKey" tooltip="该平台提供的 API Key 或等效凭证">
-        <Input.Password placeholder="请输入 API Key" disabled={!form.getFieldValue('customEnabled')} />
+        <Input.Password placeholder="请输入 API Key" disabled={!customEnabled} />
       </Form.Item>
 
       <Form.Item label="API Endpoint" name="customEndpoint" tooltip="该平台的 API 端点地址">
-        <Input placeholder="请输入 API Endpoint" disabled={!form.getFieldValue('customEnabled')} />
+        <Input placeholder="请输入 API Endpoint" disabled={!customEnabled} />
       </Form.Item>
 
       <Form.Item label="套餐类型" name="customPlanType" tooltip="该平台的 Coding Plan 名称">
-        <Input placeholder="请输入套餐类型名称" disabled={!form.getFieldValue('customEnabled')} />
+        <Input placeholder="请输入套餐类型名称" disabled={!customEnabled} />
       </Form.Item>
 
       <Form.Item style={{ marginTop: 24 }}>

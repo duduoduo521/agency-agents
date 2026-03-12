@@ -7,7 +7,8 @@ import {
 import { 
   PlusOutlined, PlayCircleOutlined, CheckCircleOutlined,
   SyncOutlined, CloseCircleOutlined, DownloadOutlined,
-  DeleteOutlined, EyeOutlined, CodeOutlined, SearchOutlined
+  DeleteOutlined, EyeOutlined, CodeOutlined, SearchOutlined,
+  RedoOutlined
 } from '@ant-design/icons';
 import { taskApi, healthApi } from '../services/api';
 import { useNavigate } from 'react-router-dom';
@@ -26,7 +27,8 @@ const statusConfig = {
  testing: { color: 'gold', text: '测试中', icon: <SyncOutlined spin /> },
  reviewing: { color: 'lime', text: '审查中', icon: <SyncOutlined spin /> },
  completed: { color: 'green', text: '已完成', icon: <CheckCircleOutlined /> },
- failed: { color: 'red', text: '失败', icon: <CloseCircleOutlined /> }
+ failed: { color: 'red', text: '失败', icon: <CloseCircleOutlined /> },
+ cancelled: { color: 'volcano', text: '已取消', icon: <CloseCircleOutlined /> }
 };
 
 const TaskPage = () => {
@@ -160,6 +162,18 @@ const navigate = useNavigate();
     }
  };
 
+ // 重试失败的任务
+ const retryTask = async (taskId) => {
+  try {
+    await taskApi.retryTask(taskId);
+    message.success('任务重试已启动！');
+    fetchTasks();
+  } catch (error) {
+    message.error('重试任务失败');
+    console.error('重试任务失败:', error);
+  }
+};
+
  // 表格列定义
  const columns = [
    {
@@ -215,39 +229,49 @@ const navigate = useNavigate();
     },
    {
      title: '操作',
-    key: 'action',
-    render: (_, record) => (
-       <Space size="small">
-         <Button
-          type="link"
-           size="small"
-           icon={<EyeOutlined />}
-           onClick={() => viewTaskDetail(record)}
-         >
-          查看
-         </Button>
-         {record.status === 'completed' && (
-           <Button
+      key: 'action',
+      render: (_, record) => (
+        <Space size="small">
+          <Button
             type="link"
-             size="small"
-             icon={<DownloadOutlined />}
-             onClick={() => downloadCode(record)}
-           >
-             下载
-           </Button>
-         )}
-         <Popconfirm
-           title="确定要删除此任务吗？"
-           onConfirm={() => deleteTask(record.id)}
-           okText="确定"
-           cancelText="取消"
-         >
-           <Button type="link" size="small" danger icon={<DeleteOutlined />}>
-             删除
-           </Button>
-         </Popconfirm>
-       </Space>
-     )
+            size="small"
+            icon={<EyeOutlined />}
+            onClick={() => viewTaskDetail(record)}
+          >
+            查看
+          </Button>
+          {record.status === 'completed' && (
+            <Button
+              type="link"
+              size="small"
+              icon={<DownloadOutlined />}
+              onClick={() => downloadCode(record)}
+            >
+              下载
+            </Button>
+          )}
+          {record.status === 'failed' && (
+            <Button
+              type="link"
+              size="small"
+              icon={<RedoOutlined />}
+              onClick={() => retryTask(record.id)}
+            >
+              重试
+            </Button>
+          )}
+          <Popconfirm
+            title="确定要删除此任务吗？"
+            onConfirm={() => deleteTask(record.id)}
+            okText="确定"
+            cancelText="取消"
+          >
+            <Button type="link" size="small" danger icon={<DeleteOutlined />}>
+              删除
+            </Button>
+          </Popconfirm>
+        </Space>
+      )
     }
   ];
 

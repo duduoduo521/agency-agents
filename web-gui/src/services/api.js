@@ -46,6 +46,9 @@ export const taskApi = {
   // 删除任务
   deleteTask: (taskId) => apiClient.delete(`/tasks/${taskId}`),
   
+  // 重试任务
+  retryTask: (taskId) => apiClient.post(`/tasks/${taskId}/retry`),
+  
   // 下载任务代码
   downloadTaskCode: (taskId) => {
     return `${apiClient.defaults.baseURL}/tasks/${taskId}/download`;
