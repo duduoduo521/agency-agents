@@ -64,7 +64,43 @@ export const taskApi = {
 export const healthApi = {
   getStatus: () => apiClient.get('/status'),
   // 检查大模型配置状态
-  checkLlmConfig: () => apiClient.get('/health/llm-config'),
+  checkLlmConfig: async () => {
+    try {
+      // 首先尝试调用后端API
+      const response = await apiClient.get('/health/llm-config');
+      return response;
+    } catch (error) {
+      // 如果后端API不可用，回退到检查localStorage
+      console.warn('后端健康检查API不可用，使用localStorage配置');
+      try {
+        const configStr = localStorage.getItem('the-code-agency-settings');
+        if (configStr) {
+          const config = JSON.parse(configStr);
+          const hasConfiguredLlm = 
+            (config.aliEnabled && config.aliApiKey) ||
+            (config.tencentEnabled && config.tencentSecretId && config.tencentSecretKey) ||
+            (config.baiduEnabled && config.baiduApiKey && config.baiduSecretKey) ||
+            (config.customEnabled && config.customApiKey);
+          
+          return {
+            data: {
+              configured: hasConfiguredLlm,
+              providers: {
+                ali: { enabled: config.aliEnabled, configured: config.aliEnabled && config.aliApiKey },
+                tencent: { enabled: config.tencentEnabled, configured: config.tencentEnabled && config.tencentSecretId && config.tencentSecretKey },
+                baidu: { enabled: config.baiduEnabled, configured: config.baiduEnabled && config.baiduApiKey && config.baiduSecretKey },
+                custom: { enabled: config.customEnabled, configured: config.customEnabled && config.customApiKey }
+              }
+            }
+          };
+        }
+      } catch (e) {
+        console.error('从localStorage读取配置失败:', e);
+      }
+      // 默认返回未配置
+      return { data: { configured: false, providers: {} } };
+    }
+  },
 };
 
 export default apiClient;

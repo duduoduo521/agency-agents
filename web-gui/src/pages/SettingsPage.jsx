@@ -1,7 +1,10 @@
 import React, { useState, useEffect } from 'react';
-import { Card, Form, Input, Select, Switch, Button, Divider, message, Tabs, Space, Alert } from 'antd';
-import { RobotOutlined, ApiOutlined, GlobalOutlined, SafetyCertificateOutlined } from '@ant-design/icons';
+import { Card, Form, Input, Select, Switch, Button, Divider, message, Tabs, Space, Alert, Modal } from 'antd';
+import { RobotOutlined, ApiOutlined, GlobalOutlined, SafetyCertificateOutlined, CopyOutlined } from '@ant-design/icons';
 import { useApi } from '../contexts/ApiContext';
+
+// 配置存储键名
+const CONFIG_STORAGE_KEY = 'the-code-agency-settings';
 
 const SettingsPage = () => {
   const [form] = Form.useForm();
@@ -20,62 +23,131 @@ const SettingsPage = () => {
   const [tencentEnabled, setTencentEnabled] = useState(false);
   const [baiduEnabled, setBaiduEnabled] = useState(false);
   const [customEnabled, setCustomEnabled] = useState(false);
+  const [showEnvGuide, setShowEnvGuide] = useState(false);
+  const [envVariables, setEnvVariables] = useState('');
+
+  // 从localStorage加载配置
+  const loadConfigFromStorage = () => {
+    try {
+      const configStr = localStorage.getItem(CONFIG_STORAGE_KEY);
+      if (configStr) {
+        return JSON.parse(configStr);
+      }
+    } catch (error) {
+      console.error('从localStorage加载配置失败:', error);
+    }
+    return null;
+  };
+
+  // 保存配置到localStorage
+  const saveConfigToStorage = (config) => {
+    try {
+      localStorage.setItem(CONFIG_STORAGE_KEY, JSON.stringify(config));
+      return true;
+    } catch (error) {
+      console.error('保存配置到localStorage失败:', error);
+      return false;
+    }
+  };
+
+  // 生成环境变量字符串
+  const generateEnvVariables = (config) => {
+    const envVars = [];
+    
+    // 阿里云配置
+    if (config.aliEnabled) {
+      envVars.push(`ALI_ENABLED=true`);
+      if (config.aliApiKey) envVars.push(`ALI_API_KEY=${config.aliApiKey}`);
+      if (config.aliEndpoint) envVars.push(`ALI_ENDPOINT=${config.aliEndpoint}`);
+      if (config.aliPlanType) envVars.push(`ALI_PLAN_TYPE=${config.aliPlanType}`);
+    } else {
+      envVars.push(`ALI_ENABLED=false`);
+    }
+    
+    // 腾讯云配置
+    if (config.tencentEnabled) {
+      envVars.push(`TENCENT_ENABLED=true`);
+      if (config.tencentSecretId) envVars.push(`TENCENT_SECRET_ID=${config.tencentSecretId}`);
+      if (config.tencentSecretKey) envVars.push(`TENCENT_SECRET_KEY=${config.tencentSecretKey}`);
+      if (config.tencentEndpoint) envVars.push(`TENCENT_ENDPOINT=${config.tencentEndpoint}`);
+      if (config.tencentPlanType) envVars.push(`TENCENT_PLAN_TYPE=${config.tencentPlanType}`);
+    } else {
+      envVars.push(`TENCENT_ENABLED=false`);
+    }
+    
+    // 百度配置
+    if (config.baiduEnabled) {
+      envVars.push(`BAIDU_ENABLED=true`);
+      if (config.baiduApiKey) envVars.push(`BAIDU_API_KEY=${config.baiduApiKey}`);
+      if (config.baiduSecretKey) envVars.push(`BAIDU_SECRET_KEY=${config.baiduSecretKey}`);
+      if (config.baiduEndpoint) envVars.push(`BAIDU_ENDPOINT=${config.baiduEndpoint}`);
+      if (config.baiduPlanType) envVars.push(`BAIDU_PLAN_TYPE=${config.baiduPlanType}`);
+    } else {
+      envVars.push(`BAIDU_ENABLED=false`);
+    }
+    
+    // 自定义配置
+    if (config.customEnabled) {
+      envVars.push(`CUSTOM_ENABLED=true`);
+      if (config.customApiKey) envVars.push(`CUSTOM_API_KEY=${config.customApiKey}`);
+      if (config.customEndpoint) envVars.push(`CUSTOM_ENDPOINT=${config.customEndpoint}`);
+      if (config.customPlanType) envVars.push(`CUSTOM_PLAN_TYPE=${config.customPlanType}`);
+    } else {
+      envVars.push(`CUSTOM_ENABLED=false`);
+    }
+    
+    return envVars.join('\n');
+  };
 
   // 加载设置
   const loadSettings = async () => {
     try {
-      // 这里应该调用获取设置的API，暂时使用模拟API调用
-      // 实际项目中应该有类似这样的API端点：/api/settings
-      const response = await taskApi.getTasks(); // 临时使用现有API
-      // 实际应用中应为: const response = await apiClient.get('/settings');
+      // 优先从localStorage加载配置
+      const storedConfig = loadConfigFromStorage() || getDefaultSettings();
       
-      // 从响应中获取设置数据
-      const loadedSettings = response.data && response.data.length > 0 ? 
-        response.data[0] : getDefaultSettings();
-      
-      setSettings(loadedSettings);
+      setSettings(storedConfig);
       
       // 设置表单初始值
       form.setFieldsValue({
-        model: loadedSettings.model || 'qwen-max',
-        temperature: loadedSettings.temperature || 0.7,
-        autoSave: loadedSettings.autoSave !== false, // 默认为true
-        workflowStartStage: loadedSettings.workflowStartStage || 'requirements',
-        qualityThreshold: loadedSettings.qualityThreshold || 90,
-        cliPath: loadedSettings.cliPath || './scripts/agency-cli.js',
-        outputDir: loadedSettings.outputDir || './output'
+        model: storedConfig.model || 'qwen-max',
+        temperature: storedConfig.temperature || 0.7,
+        autoSave: storedConfig.autoSave !== false, // 默认为true
+        workflowStartStage: storedConfig.workflowStartStage || 'requirements',
+        qualityThreshold: storedConfig.qualityThreshold || 90,
+        cliPath: storedConfig.cliPath || './scripts/agency-cli.js',
+        outputDir: storedConfig.outputDir || './output'
       });
       
       robotForm.setFieldsValue({
-        dingtalkEnabled: loadedSettings.dingtalkEnabled || false,
-        dingtalkToken: loadedSettings.dingtalkToken || '',
-        dingtalkSecret: loadedSettings.dingtalkSecret || '',
-        feishuEnabled: loadedSettings.feishuEnabled || false,
-        feishuToken: loadedSettings.feishuToken || '',
-        feishuSecret: loadedSettings.feishuSecret || ''
+        dingtalkEnabled: storedConfig.dingtalkEnabled || false,
+        dingtalkToken: storedConfig.dingtalkToken || '',
+        dingtalkSecret: storedConfig.dingtalkSecret || '',
+        feishuEnabled: storedConfig.feishuEnabled || false,
+        feishuToken: storedConfig.feishuToken || '',
+        feishuSecret: storedConfig.feishuSecret || ''
       });
       
       // 设置LLM表单值和状态
       const llmSettings = {
-        aliEnabled: loadedSettings.aliEnabled || false,
-        aliApiKey: loadedSettings.aliApiKey || '',
-        aliEndpoint: loadedSettings.aliEndpoint || 'https://dashscope.aliyuncs.com/api/v1',
-        aliPlanType: loadedSettings.aliPlanType || 'qwen-coder-plus',
-        tencentEnabled: loadedSettings.tencentEnabled || false,
-        tencentSecretId: loadedSettings.tencentSecretId || '',
-        tencentSecretKey: loadedSettings.tencentSecretKey || '',
-        tencentEndpoint: loadedSettings.tencentEndpoint || 'https://hunyuan.tencentcloudapi.com',
-        tencentPlanType: loadedSettings.tencentPlanType || 'hunyuan-code-pro',
-        baiduEnabled: loadedSettings.baiduEnabled || false,
-        baiduApiKey: loadedSettings.baiduApiKey || '',
-        baiduSecretKey: loadedSettings.baiduSecretKey || '',
-        baiduEndpoint: loadedSettings.baiduEndpoint || 'https://aip.baidubce.com/rpc/2.0/ai_custom/v1',
-        baiduPlanType: loadedSettings.baiduPlanType || 'ernie-bot-code-pro',
-        customEnabled: loadedSettings.customEnabled || false,
-        customPlatformName: loadedSettings.customPlatformName || '',
-        customApiKey: loadedSettings.customApiKey || '',
-        customEndpoint: loadedSettings.customEndpoint || '',
-        customPlanType: loadedSettings.customPlanType || ''
+        aliEnabled: storedConfig.aliEnabled || false,
+        aliApiKey: storedConfig.aliApiKey || '',
+        aliEndpoint: storedConfig.aliEndpoint || 'https://coding.dashscope.aliyuncs.com/v1',
+        aliPlanType: storedConfig.aliPlanType || 'qwen-coder-plus',
+        tencentEnabled: storedConfig.tencentEnabled || false,
+        tencentSecretId: storedConfig.tencentSecretId || '',
+        tencentSecretKey: storedConfig.tencentSecretKey || '',
+        tencentEndpoint: storedConfig.tencentEndpoint || 'https://hunyuan.tencentcloudapi.com',
+        tencentPlanType: storedConfig.tencentPlanType || 'hunyuan-code-pro',
+        baiduEnabled: storedConfig.baiduEnabled || false,
+        baiduApiKey: storedConfig.baiduApiKey || '',
+        baiduSecretKey: storedConfig.baiduSecretKey || '',
+        baiduEndpoint: storedConfig.baiduEndpoint || 'https://aip.baidubce.com/rpc/2.0/ai_custom/v1',
+        baiduPlanType: storedConfig.baiduPlanType || 'ernie-bot-code-pro',
+        customEnabled: storedConfig.customEnabled || false,
+        customPlatformName: storedConfig.customPlatformName || '',
+        customApiKey: storedConfig.customApiKey || '',
+        customEndpoint: storedConfig.customEndpoint || '',
+        customPlanType: storedConfig.customPlanType || ''
       };
       
       llmForm.setFieldsValue(llmSettings);
@@ -88,10 +160,13 @@ const SettingsPage = () => {
       message.error('加载设置失败，使用默认值');
       
       // 设置默认值
-      setSettings(getDefaultSettings());
-      form.setFieldsValue(getDefaultSettings());
-      robotForm.setFieldsValue(getDefaultRobotSettings());
+      const defaultSettings = getDefaultSettings();
+      const defaultRobot = getDefaultRobotSettings();
       const defaultLlm = getDefaultLlmSettings();
+      
+      setSettings({...defaultSettings, ...defaultRobot, ...defaultLlm});
+      form.setFieldsValue(defaultSettings);
+      robotForm.setFieldsValue(defaultRobot);
       llmForm.setFieldsValue(defaultLlm);
       setAliEnabled(defaultLlm.aliEnabled);
       setTencentEnabled(defaultLlm.tencentEnabled);
@@ -145,17 +220,14 @@ const SettingsPage = () => {
   // 保存设置
   const onFinish = async (values) => {
     try {
-      // 这里应该调用保存设置的API
-      // 实际项目中应该有类似这样的API端点：/api/settings
-      await taskApi.createTask({ // 临时使用现有API
-        command: 'save-settings',
-        params: JSON.stringify(values),
-        options: {}
-      });
-      // 实际应用中应为: await apiClient.post('/settings', values);
+      const newSettings = {...settings, ...values};
+      setSettings(newSettings);
       
-      message.success('设置已保存');
-      setSettings({...settings, ...values});
+      if (saveConfigToStorage(newSettings)) {
+        message.success('设置已保存');
+      } else {
+        message.error('保存设置失败，请检查浏览器设置');
+      }
     } catch (error) {
       console.error('保存设置失败:', error);
       message.error('保存设置失败');
@@ -165,15 +237,14 @@ const SettingsPage = () => {
   // 保存机器人配置
   const onRobotFinish = async (values) => {
     try {
-      // 保存机器人配置
-      await taskApi.createTask({ // 临时使用现有API
-        command: 'save-robot-config',
-        params: JSON.stringify(values),
-        options: {}
-      });
-      // 实际应用中应为: await apiClient.post('/settings/robot', values);
+      const newSettings = {...settings, ...values};
+      setSettings(newSettings);
       
-      message.success('机器人配置已保存');
+      if (saveConfigToStorage(newSettings)) {
+        message.success('机器人配置已保存');
+      } else {
+        message.error('保存机器人配置失败，请检查浏览器设置');
+      }
     } catch (error) {
       console.error('保存机器人配置失败:', error);
       message.error('保存机器人配置失败');
@@ -183,18 +254,32 @@ const SettingsPage = () => {
   // 保存大模型配置
   const onLlmFinish = async (values) => {
     try {
-      // 保存大模型配置
-      await taskApi.createTask({ // 临时使用现有API
-        command: 'save-llm-config',
-        params: JSON.stringify(values),
-        options: {}
-      });
-      // 实际应用中应为: await apiClient.post('/settings/llm', values);
+      const newSettings = {...settings, ...values};
+      setSettings(newSettings);
       
-      message.success('大模型配置已保存');
+      if (saveConfigToStorage(newSettings)) {
+        message.success('大模型配置已保存');
+        
+        // 生成环境变量并显示指南
+        const envVars = generateEnvVariables(values);
+        setEnvVariables(envVars);
+        setShowEnvGuide(true);
+      } else {
+        message.error('保存大模型配置失败，请检查浏览器设置');
+      }
     } catch (error) {
       console.error('保存大模型配置失败:', error);
       message.error('保存大模型配置失败');
+    }
+  };
+
+  // 复制环境变量到剪贴板
+  const copyEnvVariables = async () => {
+    try {
+      await navigator.clipboard.writeText(envVariables);
+      message.success('环境变量已复制到剪贴板');
+    } catch (error) {
+      message.error('复制失败，请手动复制');
     }
   };
 
@@ -260,6 +345,48 @@ const SettingsPage = () => {
           }
         ]}
       />
+      
+      {/* 环境变量设置指南模态框 */}
+      <Modal
+        title="环境变量设置指南"
+        open={showEnvGuide}
+        onCancel={() => setShowEnvGuide(false)}
+        footer={[
+          <Button key="copy" type="primary" icon={<CopyOutlined />} onClick={copyEnvVariables}>
+            复制到剪贴板
+          </Button>,
+          <Button key="ok" type="primary" onClick={() => setShowEnvGuide(false)}>
+            确定
+          </Button>
+        ]}
+        width={600}
+      >
+        <Alert
+          message="重要提示"
+          description="为了使大模型配置生效，您需要将以下环境变量添加到您的系统中，然后重启服务器。"
+          type="warning"
+          showIcon
+          style={{ marginBottom: 16 }}
+        />
+        <div style={{ 
+          backgroundColor: '#f5f5f5', 
+          padding: 12, 
+          borderRadius: 4, 
+          fontFamily: 'monospace',
+          maxHeight: 300,
+          overflow: 'auto'
+        }}>
+          {envVariables}
+        </div>
+        <div style={{ marginTop: 16 }}>
+          <h4>设置方法：</h4>
+          <ul>
+            <li><strong>Windows</strong>: 在命令行中使用 <code>set 变量名=值</code> 或创建 .env 文件</li>
+            <li><strong>Linux/Mac</strong>: 在终端中使用 <code>export 变量名=값</code> 或创建 .env 文件</li>
+            <li><strong>Docker</strong>: 在 docker run 命令中使用 <code>-e 变量명=값</code></li>
+          </ul>
+        </div>
+      </Modal>
     </div>
   );
 };
