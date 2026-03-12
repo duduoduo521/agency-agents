@@ -2,14 +2,15 @@ import React, { useState, useEffect } from'react';
 import { 
   Card, Table, Button, Tag, Space, Modal, Form, Input, Select, 
   message, Progress, Drawer, Timeline, Statistic, Row, Col, Badge,
-  Tooltip, Popconfirm
+  Tooltip, Popconfirm, notification
 } from'antd';
 import { 
   PlusOutlined, PlayCircleOutlined, CheckCircleOutlined,
   SyncOutlined, CloseCircleOutlined, DownloadOutlined,
   DeleteOutlined, EyeOutlined, CodeOutlined, SearchOutlined
 } from '@ant-design/icons';
-import { taskApi } from '../services/api';
+import { taskApi, healthApi } from '../services/api';
+import { useNavigate } from 'react-router-dom';
 import JSZip from'jszip';
 import { saveAs } from 'file-saver';
 import dayjs from'dayjs';
@@ -37,6 +38,61 @@ const [createModalVisible, setCreateModalVisible] = useState(false);
 const [searchText, setSearchText] = useState('');
 const [filteredTasks, setFilteredTasks] = useState([]);
 const [createForm] = Form.useForm();
+const navigate = useNavigate();
+
+ // 检查大模型配置状态
+ const checkLlmConfig = async () => {
+   try {
+     const response = await healthApi.checkLlmConfig();
+     return response.data?.configured === true;
+   } catch (error) {
+     console.error('检查大模型配置失败:', error);
+     return false;
+   }
+ };
+
+ // 创建任务处理函数
+ const handleCreateTask = async (values) => {
+   // 先检查大模型配置
+   const isConfigured = await checkLlmConfig();
+   
+   if (!isConfigured) {
+     // 显示提示并跳转到设置页面
+     Modal.confirm({
+       title: '大模型未配置',
+       content: '您尚未配置大模型。请先配置大模型后才能创建任务。',
+       okText: '去配置',
+       cancelText: '取消',
+       onOk: () => {
+         setCreateModalVisible(false);
+         navigate('/settings');
+       },
+       onCancel: () => {
+         // 取消创建
+       }
+     });
+     return;
+   }
+
+   try {
+     const taskData = {
+       command: values.command,
+       description: values.description,
+       techStack: values.techStack || [],
+       status: 'pending',
+       progress: 0
+     };
+     
+     await taskApi.createTask(taskData);
+     message.success('任务创建成功！');
+     setCreateModalVisible(false);
+     createForm.resetFields();
+     fetchTasks();
+   } catch (error) {
+     message.error('创建任务失败，请稍后重试');
+     console.error('创建任务失败:', error);
+   }
+ };
 
  // 获取任务列表
  const fetchTasks = async () => {
@@ -70,26 +126,6 @@ const [createForm] = Form.useForm();
      setFilteredTasks(filtered);
    }
  }, [tasks, searchText]);
-
- // 创建任务
- const handleCreateTask = async (values) => {
-   try {
-     await taskApi.createTask({
-      command: values.command,
-      params: values.description,
-      options: {
-        techStack: values.techStack
-      }
-    });
-    
-   message.success('任务创建成功！');
-    setCreateModalVisible(false);
-   createForm.resetFields();
-    fetchTasks();
-   } catch (error) {
-    message.error('创建任务失败');
-    }
- };
 
  // 查看任务详情
  const viewTaskDetail = async (task) => {

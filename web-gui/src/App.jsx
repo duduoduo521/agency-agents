@@ -7,6 +7,7 @@ import AgentPage from'./pages/AgentPage'
 import SettingsPage from'./pages/SettingsPage'
 import TaskPage from'./pages/TaskPage'
 import RobotConfigPage from './pages/RobotConfigPage'
+import TestPage from './pages/TestPage'
 
 function App() {
  return (
@@ -20,6 +21,7 @@ function App() {
             <Route path="agent" element={<AgentPage />} />
             <Route path="settings" element={<SettingsPage />} />
             <Route path="robot-config" element={<RobotConfigPage />} />
+            <Route path="test" element={<TestPage />} />
           </Route>
         </Routes>
       </BrowserRouter>

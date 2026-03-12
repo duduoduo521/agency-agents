@@ -60,6 +60,8 @@ export const taskApi = {
 // 服务器健康检查
 export const healthApi = {
   getStatus: () => apiClient.get('/status'),
+  // 检查大模型配置状态
+  checkLlmConfig: () => apiClient.get('/health/llm-config'),
 };
 
 export default apiClient;

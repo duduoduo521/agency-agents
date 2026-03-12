@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Card, Row, Col, Statistic, Button, Space, Spin } from 'antd';
+import { Card, Row, Col, Statistic, Button, Space, Spin, message } from 'antd';
 import {
   CheckCircleOutlined,
   SyncOutlined,
@@ -7,9 +7,11 @@ import {
   CodeOutlined,
 } from '@ant-design/icons';
 import { useApi } from '../contexts/ApiContext';
+import { useNavigate } from 'react-router-dom';
 
 const HomePage = () => {
   const { taskApi, healthApi } = useApi();
+  const navigate = useNavigate();
   const [stats, setStats] = useState({
     completedWorkflows: 0,
     activeTasks: 0,
@@ -21,9 +23,7 @@ const HomePage = () => {
   useEffect(() => {
     const fetchStats = async () => {
       try {
-        // 这里应该调用实际的API来获取统计数据
-        // 由于目前的API端点可能不直接提供这些统计信息，
-        // 我们先使用taskApi.getTasks来获取任务数据
+        // 获取任务数据来计算统计数据
         const response = await taskApi.getTasks();
         const tasks = response.data || [];
         
@@ -34,17 +34,18 @@ const HomePage = () => {
         tasks.forEach(task => {
           if (task.status === 'completed') {
             completedCount++;
-          } else if (task.status === 'running' || task.status === 'pending') {
+          } else if (task.status === 'running' || task.status === 'pending' || 
+                    ['analyzing', 'designing', 'coding', 'testing', 'reviewing'].includes(task.status)) {
             activeCount++;
           }
         });
 
-        // 模拟其他统计信息（实际应用中需要从API获取）
+        // 使用实际的任务数量作为项目总数
         setStats({
           completedWorkflows: completedCount,
           activeTasks: activeCount,
           agentCount: 15, // 实际应用中应从API获取
-          projectCount: 28 // 实际应用中应从API获取
+          projectCount: tasks.length // 使用实际任务数量
         });
       } catch (error) {
         console.error('获取统计数据失败:', error);
@@ -62,6 +63,20 @@ const HomePage = () => {
 
     fetchStats();
   }, [taskApi]);
+
+  // 快速开始按钮处理函数
+  const handleCreateWorkflow = () => {
+    navigate('/task');
+  };
+
+  const handleViewDocs = () => {
+    // 跳转到文档页面（如果存在）或打开外部文档链接
+    window.open('https://github.com/your-repo/docs', '_blank');
+  };
+
+  const handleConfigureAgents = () => {
+    navigate('/settings');
+  };
 
   return (
     <div>
@@ -114,13 +129,13 @@ const HomePage = () => {
 
       <Card title="快速开始">
         <Space>
-          <Button type="primary" size="large">
+          <Button type="primary" size="large" onClick={handleCreateWorkflow}>
             创建工作流
           </Button>
-          <Button size="large">
+          <Button size="large" onClick={handleViewDocs}>
             查看文档
           </Button>
-          <Button size="large">
+          <Button size="large" onClick={handleConfigureAgents}>
             配置代理
           </Button>
         </Space>

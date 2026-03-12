@@ -1,11 +1,13 @@
 import React, { useState, useEffect } from 'react';
-import { Card, Table, Button, Tag, Progress, Space, message } from 'antd';
+import { Card, Table, Button, Tag, Progress, Space, message, Modal, Descriptions } from 'antd';
 import { useApi } from '../contexts/ApiContext';
 
 const WorkflowPage = () => {
   const { taskApi } = useApi();
   const [workflows, setWorkflows] = useState([]);
   const [loading, setLoading] = useState(false);
+  const [selectedWorkflow, setSelectedWorkflow] = useState(null);
+  const [detailModalVisible, setDetailModalVisible] = useState(false);
 
   // 获取工作流列表
   const fetchWorkflows = async () => {
@@ -18,11 +20,13 @@ const WorkflowPage = () => {
       // 将任务数据转换为工作流数据格式
       const workflowData = tasks.map((task, index) => ({
         key: task.id || index.toString(),
+        id: task.id,
         name: task.command || `任务 ${index + 1}`,
         status: task.status || 'pending',
         stage: mapStatusToStage(task.status),
         progress: task.progress || 0,
-        createdAt: task.createdAt || new Date().toISOString()
+        createdAt: task.createdAt || new Date().toISOString(),
+        description: task.description || '无描述'
       }));
 
       setWorkflows(workflowData);
@@ -34,27 +38,33 @@ const WorkflowPage = () => {
       const defaultWorkflows = [
         {
           key: '1',
+          id: '1',
           name: '用户登录系统',
           status: 'completed',
           stage: '发布准备',
           progress: 100,
           createdAt: '2026-03-24 10:00',
+          description: '实现用户登录注册功能'
         },
         {
           key: '2',
+          id: '2',
           name: '电商网站 MVP',
           status: 'running',
           stage: '代码实现',
           progress: 65,
           createdAt: '2026-03-24 14:30',
+          description: '开发电商网站最小可行产品'
         },
         {
           key: '3',
+          id: '3',
           name: '博客系统',
           status: 'pending',
           stage: '需求分析',
           progress: 20,
           createdAt: '2026-03-24 16:00',
+          description: '创建个人博客系统'
         },
       ];
       
@@ -86,6 +96,12 @@ const WorkflowPage = () => {
       default:
         return '未知阶段';
     }
+  };
+
+  // 查看工作流详情
+  const viewWorkflowDetail = (workflow) => {
+    setSelectedWorkflow(workflow);
+    setDetailModalVisible(true);
   };
 
   useEffect(() => {
@@ -141,7 +157,13 @@ const WorkflowPage = () => {
       key: 'action',
       render: (_, record) => (
         <Space size="middle">
-          <Button type="link" size="small">查看</Button>
+          <Button 
+            type="link" 
+            size="small"
+            onClick={() => viewWorkflowDetail(record)}
+          >
+            查看
+          </Button>
           {record.status === 'pending' && (
             <Button type="link" size="small" onClick={() => message.success(`启动工作流：${record.name}`)}>
               启动
@@ -163,6 +185,27 @@ const WorkflowPage = () => {
           rowKey="key"
         />
       </Card>
+
+      {/* 工作流详情模态框 */}
+      <Modal
+        title={`工作流详情 - ${selectedWorkflow?.name || ''}`}
+        open={detailModalVisible}
+        onCancel={() => setDetailModalVisible(false)}
+        footer={null}
+        width={600}
+      >
+        {selectedWorkflow && (
+          <Descriptions column={1} bordered>
+            <Descriptions.Item label="工作流ID">{selectedWorkflow.id}</Descriptions.Item>
+            <Descriptions.Item label="名称">{selectedWorkflow.name}</Descriptions.Item>
+            <Descriptions.Item label="状态">{selectedWorkflow.status}</Descriptions.Item>
+            <Descriptions.Item label="当前阶段">{selectedWorkflow.stage}</Descriptions.Item>
+            <Descriptions.Item label="进度">{selectedWorkflow.progress}%</Descriptions.Item>
+            <Descriptions.Item label="创建时间">{selectedWorkflow.createdAt}</Descriptions.Item>
+            <Descriptions.Item label="描述">{selectedWorkflow.description}</Descriptions.Item>
+          </Descriptions>
+        )}
+      </Modal>
     </div>
   );
 };
