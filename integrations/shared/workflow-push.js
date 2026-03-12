@@ -1,175 +1,136 @@
 /**
- * 工作流状态推送服务
+ * 工作流推送服务
  * 
  * 功能:
- * - 监听工作流状态变更事件
- * - 自动推送通知到钉钉/飞书
- * - 支持自定义推送规则
+ * - 监听工作流事件
+ * - 根据配置规则推送通知
+ * - 管理推送规则和状态
  */
 
-const EventEmitter= require('events');
-
-class WorkflowPushService extends EventEmitter {
- constructor(options = {}) {
-    super();
-    
+class WorkflowPushService {
+  constructor(options) {
     this.notificationService = options.notificationService;
-    this.pushRules = options.pushRules || {
+    this.workflowEmitter = options.workflowEmitter;
+    this.rules = {
       onWorkflowStart: true,
-      onStageComplete: true,
+      onStageComplete: false,  // 默认关闭阶段完成通知，避免过多消息
+      onProgressUpdate: false, // 默认关闭进度更新通知
       onError: true,
       onWorkflowComplete: true
     };
-    
-   // 订阅工作流事件
-    this.subscribeToWorkflowEvents(options.workflowEmitter);
+
+    // 如果提供了初始规则，则合并
+    if (options.pushRules) {
+      this.rules = { ...this.rules, ...options.pushRules };
+    }
+
+    // 绑定事件监听器
+    this.bindEventListeners();
   }
 
   /**
-   * 订阅工作流事件
+   * 绑定工作流事件监听器
    */
-  subscribeToWorkflowEvents(workflowEmitter) {
-  if (!workflowEmitter) return;
+  bindEventListeners() {
+    if (!this.workflowEmitter) {
+      console.warn('⚠️  未提供工作流事件发射器，推送服务将不可用');
+      return;
+    }
 
-  // 监听工作流启动
-  workflowEmitter.on('workflow:start', (data) => {
-    if (this.pushRules.onWorkflowStart) {
-       this.pushWorkflowStart(data);
-     }
-    });
+    // 监听任务开始事件
+    if (this.rules.onWorkflowStart) {
+      this.workflowEmitter.on('taskStarted', async (task) => {
+        try {
+          await this.notificationService.sendTaskStarted(task);
+          console.log(`✅ 已发送任务开始通知: ${task.id}`);
+        } catch (error) {
+          console.error(`❌ 发送任务开始通知失败: ${error.message}`);
+        }
+      });
+    }
 
-  // 监听阶段完成
-  workflowEmitter.on('workflow:stageComplete', (data) => {
-    if (this.pushRules.onStageComplete) {
-       this.pushStageComplete(data);
-     }
-    });
+    // 监听进度更新事件
+    if (this.rules.onProgressUpdate) {
+      this.workflowEmitter.on('taskUpdate', async (task) => {
+        try {
+          await this.notificationService.sendTaskProgress(task);
+          console.log(`✅ 已发送任务进度通知: ${task.id}, ${task.progress}%`);
+        } catch (error) {
+          console.error(`❌ 发送任务进度通知失败: ${error.message}`);
+        }
+      });
+    }
 
-  // 监听错误
-  workflowEmitter.on('workflow:error', (data) => {
-    if (this.pushRules.onError) {
-       this.pushError(data);
-     }
-    });
+    // 监听任务完成事件
+    if (this.rules.onWorkflowComplete) {
+      this.workflowEmitter.on('taskCompleted', async (task) => {
+        try {
+          await this.notificationService.sendTaskCompleted(task);
+          console.log(`✅ 已发送任务完成通知: ${task.id}`);
+        } catch (error) {
+          console.error(`❌ 发送任务完成通知失败: ${error.message}`);
+        }
+      });
+    }
 
-  // 监听工作流完成
-  workflowEmitter.on('workflow:complete', (data) => {
-    if (this.pushRules.onWorkflowComplete) {
-       this.pushWorkflowComplete(data);
-     }
-    });
-  }
-
-  /**
-   * 推送工作流启动通知
-   */
-  async pushWorkflowStart({ workflowId, stage, estimatedTime }) {
- const message = this.notificationService.formatWorkflowStart(workflowId, stage, estimatedTime);
-    
-   try {
-    await this.notificationService.sendToAll(message);
-     console.log(`✅ 已推送工作流启动通知：${workflowId}`);
-   } catch (error) {
-    console.error(`❌ 推送工作流启动通知失败：${workflowId}`, error);
-   }
-  }
-
-  /**
-   * 推送阶段完成通知
-   */
-  async pushStageComplete({ workflowId, stage, result }) {
- const message = this.notificationService.formatStageComplete(stage, result);
-    
-   try {
-    await this.notificationService.sendToAll(message);
-     console.log(`✅ 已推送阶段完成通知：${workflowId} - ${stage}`);
-   } catch (error) {
-    console.error(`❌ 推送阶段完成通知失败：${workflowId}`, error);
-   }
-  }
-
-  /**
-   * 推送错误通知
-   */
-  async pushError({ workflowId, errorMessage }) {
- const message = this.notificationService.formatError(workflowId, errorMessage);
-    
-   try {
-    await this.notificationService.sendToAll(message);
-     console.log(`✅ 已推送错误通知：${workflowId}`);
-   } catch (error) {
-    console.error(`❌ 推送错误通知失败：${workflowId}`, error);
-   }
-  }
-
-  /**
-   * 推送工作流完成通知
-   */
-  async pushWorkflowComplete({ workflowId, summary }) {
- const message = {
-    type: 'workflowComplete',
-    content: `工作流 ${workflowId} 已完成`,
-     formatted: {
-        dingtalk: {
-          msgtype: 'markdown',
-         markdown: {
-           title: '✅ 工作流完成',
-           text: `## ✅ 工作流完成\n\n` +
-                  `- **工作流 ID**: ${workflowId}\n\n` +
-                  `### 执行摘要\n${summary}`
-          }
-        },
-       feishu: {
-          msg_type: 'interactive',
-         card: {
-           header: {
-            title: { tag: 'plain_text', content: '✅ 工作流完成' },
-             template: 'green'
-           },
-           elements: [
-             {
-              tag: 'markdown',
-              content: `**工作流 ID**: ${workflowId}\n\n${summary}`
-             }
-           ]
-         }
-       }
-     }
-    };
-    
-   try {
-    await this.notificationService.sendToAll(message);
-     console.log(`✅ 已推送工作流完成通知：${workflowId}`);
-   } catch (error) {
-    console.error(`❌ 推送工作流完成通知失败：${workflowId}`, error);
-   }
+    // 监听任务失败事件
+    if (this.rules.onError) {
+      this.workflowEmitter.on('taskFailed', async (task) => {
+        try {
+          await this.notificationService.sendTaskFailed(task);
+          console.log(`✅ 已发送任务失败通知: ${task.id}`);
+        } catch (error) {
+          console.error(`❌ 发送任务失败通知失败: ${error.message}`);
+        }
+      });
+    }
   }
 
   /**
    * 更新推送规则
    */
   updatePushRules(newRules) {
-  this.pushRules = { ...this.pushRules, ...newRules };
-   console.log('📋 推送规则已更新:', this.pushRules);
+    this.rules = { ...this.rules, ...newRules };
+    
+    // 重新绑定事件监听器以适应新规则
+    this.unbindEventListeners();
+    this.bindEventListeners();
+    
+    console.log('🔄 推送规则已更新:', this.rules);
+  }
+
+  /**
+   * 解绑所有事件监听器
+   */
+  unbindEventListeners() {
+    if (!this.workflowEmitter) return;
+
+    // 移除所有监听器
+    this.workflowEmitter.removeAllListeners('taskStarted');
+    this.workflowEmitter.removeAllListeners('taskUpdate');
+    this.workflowEmitter.removeAllListeners('taskCompleted');
+    this.workflowEmitter.removeAllListeners('taskFailed');
   }
 
   /**
    * 获取当前推送规则
    */
   getPushRules() {
- return this.pushRules;
+    return this.rules;
   }
 
   /**
-   * 手动推送消息
+   * 测试推送服务
    */
-  async manualPush(message) {
-   try {
-    await this.notificationService.sendToAll(message);
-     console.log(`✅ 手动推送成功`);
-   } catch (error) {
-    console.error(`❌ 手动推送失败`, error);
-   }
+  async testPushService() {
+    try {
+      const result = await this.notificationService.sendTestNotification();
+      console.log('✅ 推送服务测试成功:', result);
+      return result;
+    } catch (error) {
+      console.error('❌ 推送服务测试失败:', error.message);
+      throw error;
+    }
   }
 }
 

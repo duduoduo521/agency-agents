@@ -26,9 +26,6 @@ app.use(express.json());
 // 全局事件发射器（用于任务状态更新）
 const taskEmitter = new EventEmitter();
 
-// 任务存储（内存数据库，后续可替换为 SQLite）
-const tasks = new Map();
-
 // 机器人配置（从环境变量读取）
 const robotConfig = {
  dingtalk: {
@@ -42,6 +39,58 @@ const robotConfig = {
   secret: process.env.FEISHU_SECRET
  }
 };
+
+// ==================== 任务持久化管理 ====================
+
+// 创建任务数据目录
+const TASKS_DIR = path.join(__dirname, 'data', 'tasks');
+if (!fs.existsSync(TASKS_DIR)) {
+  fs.mkdirSync(TASKS_DIR, { recursive: true });
+}
+
+// 任务存储 - 从文件系统加载现有任务
+const tasks = new Map();
+
+// 加载已存在的任务
+function loadTasksFromDisk() {
+  const taskFiles = fs.readdirSync(TASKS_DIR);
+  for (const file of taskFiles) {
+    if (file.endsWith('.json')) {
+      try {
+        const taskData = JSON.parse(fs.readFileSync(path.join(TASKS_DIR, file), 'utf8'));
+        tasks.set(taskData.id, taskData);
+      } catch (error) {
+        console.error(`加载任务文件失败 ${file}:`, error.message);
+      }
+    }
+  }
+  console.log(`✅ 从磁盘加载了 ${tasks.size} 个任务`);
+}
+
+// 保存任务到磁盘
+function saveTaskToDisk(taskId, taskData) {
+  try {
+    const taskFilePath = path.join(TASKS_DIR, `${taskId}.json`);
+    fs.writeFileSync(taskFilePath, JSON.stringify(taskData, null, 2));
+  } catch (error) {
+    console.error(`保存任务到磁盘失败 ${taskId}:`, error.message);
+  }
+}
+
+// 从磁盘删除任务
+function removeTaskFromDisk(taskId) {
+  try {
+    const taskFilePath = path.join(TASKS_DIR, `${taskId}.json`);
+    if (fs.existsSync(taskFilePath)) {
+      fs.unlinkSync(taskFilePath);
+    }
+  } catch (error) {
+    console.error(`删除任务文件失败 ${taskId}:`, error.message);
+  }
+}
+
+// 初始化时加载任务
+loadTasksFromDisk();
 
 // ==================== 中间件 ====================
 
@@ -84,16 +133,23 @@ app.post('/api/tasks', async (req, res) => {
    createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
    outputDir: null,
-    zipUrl: null
+    zipUrl: null,
+    retries: 0,
+    maxRetries: 3
   };
   
   tasks.set(taskId, task);
+  saveTaskToDisk(taskId, task); // 保存到磁盘
+  
+  // 触发任务开始事件
+  taskEmitter.emit('taskStarted', task);
   
   // 异步执行任务
   executeTask(taskId, task);
   
  res.json({ success: true, taskId });
 });
+
 
 // 获取任务列表
 app.get('/api/tasks', (req, res) => {
@@ -115,6 +171,9 @@ app.get('/api/tasks/:taskId', (req, res) => {
 // 删除任务
 app.delete('/api/tasks/:taskId', (req, res) => {
  const deleted= tasks.delete(req.params.taskId);
+ if (deleted) {
+   removeTaskFromDisk(req.params.taskId); // 从磁盘删除
+ }
  res.json({ success: deleted });
 });
 
@@ -129,7 +188,7 @@ async function executeTask(taskId, task) {
    enabled: process.env.ALI_ENABLED === 'true',
    apiKey: process.env.ALI_API_KEY,
    endpoint: process.env.ALI_ENDPOINT,
-  planType: process.env.ALI_PLAN_TYPE || 'qwen-coder-plus'
+   planType: process.env.ALI_PLAN_TYPE || 'qwen-coder-plus'
   },
  tencent: {
   enabled: process.env.TENCENT_ENABLED === 'true',
@@ -166,7 +225,9 @@ async function executeTask(taskId, task) {
  task.params || task.command
   );
   
-  let aiResponse = await codingPlan.generateCode(requirementsPrompt, task.options?.techStack || []);
+  let aiResponse = await callWithRetry(async () => {
+    return await codingPlan.generateCode(requirementsPrompt, task.options?.techStack || []);
+  }, task.maxRetries, 2000);
   addLog(taskId, '✅ 需求分析完成');
   
   // 阶段 2: 设计文档
@@ -174,11 +235,13 @@ async function executeTask(taskId, task) {
   addLog(taskId, '🎨 设计文档生成中...');
   
  const designPrompt = promptTemplates.getTemplate('designDocument', aiResponse);
-  aiResponse = await codingPlan.generateCode(designPrompt, task.options?.techStack || []);
+  aiResponse = await callWithRetry(async () => {
+    return await codingPlan.generateCode(designPrompt, task.options?.techStack || []);
+  }, task.maxRetries, 2000);
   addLog(taskId, '✅ 设计文档完成');
   
   // 阶段 3: 代码生成（核心）
-  updateTaskStatus(taskId, 'coding',60);
+  updateTaskStatus(taskId, 'coding', 60);
   addLog(taskId, '💻 代码编写中...');
   
   // 根据命令类型选择合适的模板
@@ -193,7 +256,9 @@ async function executeTask(taskId, task) {
  codeGenerationPrompt = promptTemplates.getTemplate('codeGeneration', aiResponse, task.options?.techStack || []);
   }
   
- const generatedCode = await codingPlan.generateCode(codeGenerationPrompt, task.options?.techStack || []);
+ const generatedCode = await callWithRetry(async () => {
+    return await codingPlan.generateCode(codeGenerationPrompt, task.options?.techStack || []);
+  }, task.maxRetries, 2000);
   addLog(taskId, '✅ 代码生成完成');
   
   // 阶段 4: 测试生成
@@ -201,7 +266,9 @@ async function executeTask(taskId, task) {
   addLog(taskId, '🧪 测试执行中...');
   
  const testPrompt = promptTemplates.getTemplate('testGeneration', generatedCode);
- const testCode = await codingPlan.generateCode(testPrompt);
+ const testCode = await callWithRetry(async () => {
+    return await codingPlan.generateCode(testPrompt);
+  }, task.maxRetries, 2000);
   addLog(taskId, '✅ 测试生成完成');
   
   // 阶段 5: 代码审查
@@ -209,7 +276,9 @@ async function executeTask(taskId, task) {
   addLog(taskId, '🔍 代码审查中...');
   
  const reviewPrompt = promptTemplates.getTemplate('codeReview', generatedCode);
- const reviewResult = await codingPlan.generateCode(reviewPrompt);
+ const reviewResult = await callWithRetry(async () => {
+    return await codingPlan.generateCode(reviewPrompt);
+  }, task.maxRetries, 2000);
   addLog(taskId, '✅ 代码审查完成');
   
   // 创建输出目录并保存生成的文件
@@ -231,24 +300,58 @@ async function executeTask(taskId, task) {
   updateTaskStatus(taskId, 'completed', 100);
   addLog(taskId, `✅ 任务完成！代码已保存到：${outputDir}`);
   
-  task.outputDir = outputDir;
- task.zipUrl = `/api/tasks/${taskId}/download`;
- task.updatedAt = new Date().toISOString();
+  // 更新任务信息
+  const completedTask = tasks.get(taskId);
+  completedTask.outputDir = outputDir;
+  completedTask.zipUrl = `/api/tasks/${taskId}/download`;
+  completedTask.updatedAt = new Date().toISOString();
+  tasks.set(taskId, completedTask); // 更新map中的任务
+  saveTaskToDisk(taskId, completedTask); // 保存到磁盘
   
   // 触发完成事件（用于推送通知）
- taskEmitter.emit('taskCompleted', task);
+  taskEmitter.emit('taskCompleted', completedTask);
   
-  // 发送机器人通知
- sendNotification(task, 'completed');
+  // 发送完成通知
+  sendNotification(completedTask, 'completed');
   
  } catch (error) {
+  // 检查是否可以重试
+  if (task.retries < task.maxRetries) {
+    const retryTask = tasks.get(taskId);
+    retryTask.retries++;
+    addLog(taskId, `⚠️  任务失败，正在重试 (${retryTask.retries}/${task.maxRetries})：${error.message}`);
+    
+    // 延迟后重试
+    setTimeout(() => executeTask(taskId, retryTask), 3000);
+    return;
+  }
+  
   updateTaskStatus(taskId, 'failed', 0);
   addLog(taskId, `❌ 任务失败：${error.message}`);
- taskEmitter.emit('taskFailed', { ...task, error: error.message });
+  const failedTask = tasks.get(taskId);
+  taskEmitter.emit('taskFailed', { ...failedTask, error: error.message });
   
   // 发送失败通知
-  sendNotification({ ...task, error: error.message }, 'failed');
+  sendNotification({ ...failedTask, error: error.message }, 'failed');
  }
+}
+
+/**
+ * 带重试机制的异步函数调用
+ */
+async function callWithRetry(fn, maxRetries = 3, delay = 1000) {
+ let lastError;
+ for (let i = 0; i <= maxRetries; i++) {
+    try {
+      return await fn();
+    } catch (error) {
+      lastError = error;
+      if (i < maxRetries) {
+        await new Promise(resolve => setTimeout(resolve, delay));
+      }
+    }
+  }
+  throw lastError;
 }
 
 /**
@@ -297,6 +400,8 @@ function updateTaskStatus(taskId, status, progress) {
    task.status = status;
    task.progress = progress;
    task.updatedAt = new Date().toISOString();
+   tasks.set(taskId, task); // 更新map中的任务
+   saveTaskToDisk(taskId, task); // 保存到磁盘
    taskEmitter.emit('taskUpdate', task);
   }
 }
@@ -308,6 +413,9 @@ function addLog(taskId, message) {
       timestamp: new Date().toISOString(),
     message
     });
+   task.updatedAt = new Date().toISOString();
+   tasks.set(taskId, task); // 更新map中的任务
+   saveTaskToDisk(taskId, task); // 保存到磁盘
    taskEmitter.emit('taskUpdate', task);
   }
 }

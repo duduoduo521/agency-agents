@@ -7,9 +7,9 @@ import {
 import { 
   PlusOutlined, PlayCircleOutlined, CheckCircleOutlined,
   SyncOutlined, CloseCircleOutlined, DownloadOutlined,
-  DeleteOutlined, EyeOutlined, CodeOutlined
+  DeleteOutlined, EyeOutlined, CodeOutlined, SearchOutlined
 } from '@ant-design/icons';
-import axios from'axios';
+import { taskApi } from '../services/api';
 import JSZip from'jszip';
 import { saveAs } from 'file-saver';
 import dayjs from'dayjs';
@@ -34,13 +34,15 @@ const [loading, setLoading] = useState(false);
 const [selectedTask, setSelectedTask] = useState(null);
 const [drawerVisible, setDrawerVisible] = useState(false);
 const [createModalVisible, setCreateModalVisible] = useState(false);
+const [searchText, setSearchText] = useState('');
+const [filteredTasks, setFilteredTasks] = useState([]);
 const [createForm] = Form.useForm();
 
  // 获取任务列表
  const fetchTasks = async () => {
    setLoading(true);
    try {
-    const response = await axios.get('http://localhost:3000/api/tasks');
+     const response = await taskApi.getTasks();
      setTasks(response.data);
    } catch (error) {
     message.error('获取任务列表失败');
@@ -55,10 +57,24 @@ const [createForm] = Form.useForm();
   return () => clearInterval(interval);
  }, []);
 
+ // 根据搜索文本过滤任务
+ useEffect(() => {
+   if (!searchText) {
+     setFilteredTasks(tasks);
+   } else {
+     const filtered = tasks.filter(task => 
+       task.id.toLowerCase().includes(searchText.toLowerCase()) ||
+       task.command.toLowerCase().includes(searchText.toLowerCase()) ||
+       task.params.toLowerCase().includes(searchText.toLowerCase())
+     );
+     setFilteredTasks(filtered);
+   }
+ }, [tasks, searchText]);
+
  // 创建任务
  const handleCreateTask = async (values) => {
    try {
-    await axios.post('http://localhost:3000/api/tasks', {
+     await taskApi.createTask({
       command: values.command,
       params: values.description,
       options: {
@@ -89,10 +105,9 @@ const [createForm] = Form.useForm();
    }
    
    try {
-    const response = await fetch(`http://localhost:3000${task.zipUrl}`);
-    const blob = await response.blob();
-     saveAs(blob, `${task.id}-code.zip`);
-    message.success('下载成功！');
+    // 使用下载链接
+    window.open(`http://localhost:3000${task.zipUrl}`, '_blank');
+    message.success('下载已开始！');
    } catch (error) {
     message.error('下载失败');
     }
@@ -101,7 +116,7 @@ const [createForm] = Form.useForm();
  // 删除任务
  const deleteTask = async (taskId) => {
    try {
-    await axios.delete(`http://localhost:3000/api/tasks/${taskId}`);
+     await taskApi.deleteTask(taskId);
     message.success('删除成功');
      fetchTasks();
    } catch (error) {
@@ -115,13 +130,15 @@ const [createForm] = Form.useForm();
      title: '任务 ID',
      dataIndex: 'id',
     key: 'id',
-     width: 180
+     width: 180,
+     sorter: (a, b) => a.id.localeCompare(b.id)
     },
    {
      title: '命令',
      dataIndex: 'command',
     key: 'command',
-    render: (text) => <span style={{ fontFamily: 'monospace' }}>{text}</span>
+    render: (text) => <span style={{ fontFamily: 'monospace' }}>{text}</span>,
+    sorter: (a, b) => a.command.localeCompare(b.command)
     },
    {
      title: '参数',
@@ -140,7 +157,9 @@ const [createForm] = Form.useForm();
            {config.text}
          </Tag>
        );
-     }
+     },
+    filters: Object.keys(statusConfig).map(key => ({ text: statusConfig[key].text, value: key })),
+    onFilter: (value, record) => record.status === value
     },
    {
      title: '进度',
@@ -148,13 +167,15 @@ const [createForm] = Form.useForm();
     key: 'progress',
     render: (progress) => (
        <Progress percent={progress} strokeColor={progress === 100 ? '#52c41a' : '#1677ff'} size="small" />
-     )
+     ),
+    sorter: (a, b) => a.progress - b.progress
     },
    {
      title: '创建时间',
      dataIndex: 'createdAt',
     key: 'createdAt',
-    render: (time) => dayjs(time).format('YYYY-MM-DD HH:mm:ss')
+    render: (time) => dayjs(time).format('YYYY-MM-DD HH:mm:ss'),
+    sorter: (a, b) => new Date(a.createdAt) - new Date(b.createdAt)
     },
    {
      title: '操作',
@@ -247,10 +268,20 @@ const [createForm] = Form.useForm();
        </Col>
      </Row>
 
+     <Card style={{ marginBottom: 24 }}>
+       <Input
+         placeholder="搜索任务ID、命令或参数"
+         prefix={<SearchOutlined />}
+         value={searchText}
+         onChange={(e) => setSearchText(e.target.value)}
+         style={{ maxWidth: 300 }}
+       />
+     </Card>
+
      <Card>
        <Table
          columns={columns}
-         dataSource={tasks}
+         dataSource={filteredTasks}
          loading={loading}
          rowKey="id"
          pagination={{ pageSize: 10 }}
@@ -260,7 +291,7 @@ const [createForm] = Form.useForm();
      {/* 创建任务弹窗 */}
      <Modal
        title="创建新任务"
-       visible={createModalVisible}
+       open={createModalVisible}
        onCancel={() => setCreateModalVisible(false)}
        onOk={() => createForm.submit()}
        okText="创建"
@@ -295,7 +326,7 @@ const [createForm] = Form.useForm();
           label="技术栈偏好"
            name="techStack"
          >
-           <Select mode="multiple">
+           <Select mode="multiple" placeholder="选择技术栈偏好（可选）">
              <Select.Option value="react">React</Select.Option>
              <Select.Option value="vue">Vue</Select.Option>
              <Select.Option value="node">Node.js</Select.Option>
@@ -312,7 +343,7 @@ const [createForm] = Form.useForm();
          title={`任务详情 - ${selectedTask.id}`}
          placement="right"
          width={800}
-         visible={drawerVisible}
+         open={drawerVisible}
          onClose={() => setDrawerVisible(false)}
        >
          <Space direction="vertical" style={{ width: '100%' }} size="large">
@@ -328,7 +359,7 @@ const [createForm] = Form.useForm();
            {/* 实时日志 */}
            <Card title="执行日志" size="small">
              <Timeline
-               items={selectedTask.logs.map((log, index) => ({
+               items={selectedTask.logs?.map((log, index) => ({
                 key: index,
                  color: log.message.includes('✅') ? 'green' : log.message.includes('❌') ? 'red' : 'blue',
                 children: (

@@ -1,12 +1,14 @@
 import React, { useState } from'react';
 import { Outlet, useNavigate, useLocation } from'react-router-dom';
-import { Layout, Menu, theme } from'antd';
+import { Layout, Menu, theme, Button } from'antd';
 import {
   HomeOutlined,
  AppstoreOutlined,
   RobotOutlined,
   SettingOutlined,
   ProjectOutlined,
+  BugOutlined,
+  CustomerServiceOutlined,  // 添加机器人配置图标
 } from '@ant-design/icons';
 
 const { Header, Content, Sider } = Layout;
@@ -39,6 +41,16 @@ const MainLayout = () => {
       key: '/agent',
       icon: <RobotOutlined />,
       label: '代理管理',
+    },
+    {
+      key: '/test',  // 添加测试页面菜单项
+      icon: <BugOutlined />,
+      label: '系统测试',
+    },
+    {
+      key: '/robot-config',  // 添加机器人配置菜单项
+      icon: <CustomerServiceOutlined />,
+      label: '机器人配置',
     },
     {
       key: '/settings',

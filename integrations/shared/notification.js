@@ -1,317 +1,367 @@
 /**
- * 通用消息通知服务
+ * 通知服务
  * 
  * 功能:
- * - 统一钉钉和飞书的通知接口
- * - 支持多种通知类型（启动、完成、错误、日报）
- * - 异步消息队列处理
- * - 通知模板管理
+ * - 统一向钉钉和飞书机器人发送通知
+ * - 管理通知配置和状态
+ * - 提供通用的通知接口
  */
 
-const EventEmitter = require('events');
+const axios = require('axios');
 
-class NotificationService extends EventEmitter {
- constructor(config = {}) {
-    super();
-    
-    this.dingtalk = config.dingtalk;
-    this.feishu = config.feishu;
-    this.enabled = config.enabled !== false;
-    
-   // 通知模板
-    this.templates = {
-      workflowStart: this.formatWorkflowStart.bind(this),
-      stageComplete: this.formatStageComplete.bind(this),
-      error: this.formatError.bind(this),
-     dailyReport: this.formatDailyReport.bind(this)
+class NotificationService {
+  constructor(config) {
+    this.config = {
+      dingtalk: config.dingtalk || {},
+      feishu: config.feishu || {},
+      enabled: config.enabled !== false // 默认启用
     };
-    
-    // 消息队列（简单的内存队列）
-    this.messageQueue = [];
-    this.processing = false;
-  }
 
-  /**
-   * 发送通知到所有已配置的平台
-   */
-  async sendToAll(message, options = {}) {
-  if (!this.enabled) return;
-
- const platforms = [];
-    
-  if (this.dingtalk) {
-     platforms.push({ name: 'dingtalk', handler: this.sendToDingTalk.bind(this) });
-    }
-    
-  if (this.feishu) {
-     platforms.push({ name: 'feishu', handler: this.sendToFeishu.bind(this) });
+    // 验证配置
+    if (!this.config.enabled) {
+      console.log('⚠️  通知服务已禁用');
+      return;
     }
 
-   // 并行发送到所有平台
- const results = await Promise.allSettled(
-     platforms.map(async ({ name, handler }) => {
-       try {
-         await handler(message, options);
-        return { platform: name, success: true };
-       } catch (error) {
-        console.error(`发送到${name}失败:`, error);
-        return { platform: name, success: false, error };
-       }
-     })
-    );
-
-   // 触发事件
-  this.emit('notificationSent', { message, results });
-    
- return results;
+    if (!this.config.dingtalk.webhook && !this.config.feishu.webhook) {
+      console.warn('⚠️  未配置任何机器人 webhook 地址');
+    }
   }
 
   /**
-   * 发送到钉钉
+   * 向所有启用的平台发送通知
    */
-  async sendToDingTalk(message, options = {}) {
-  if (!this.dingtalk) throw new Error('钉钉未配置');
+  async sendToAll(message) {
+    if (!this.config.enabled) {
+      return { success: true, results: {} };
+    }
 
-  // 这里应该调用钉钉的 API 发送消息
-  // 简化实现：直接输出日志
- console.log('[钉钉通知]', message.type, message.content);
-    
-   // 实际使用时需要调用钉钉 API
-  // await axios.post(dingtalkWebhookUrl, message.formatted);
-    
- return { success: true, platform: 'dingtalk' };
+    const results = {};
+
+    // 发送钉钉通知
+    if (this.config.dingtalk.webhook) {
+      try {
+        results.dingtalk = await this.sendToDingTalk(message);
+      } catch (error) {
+        console.error('发送钉钉通知失败:', error.message);
+        results.dingtalk = { success: false, error: error.message };
+      }
+    }
+
+    // 发送飞书通知
+    if (this.config.feishu.webhook) {
+      try {
+        results.feishu = await this.sendToFeishu(message);
+      } catch (error) {
+        console.error('发送飞书通知失败:', error.message);
+        results.feishu = { success: false, error: error.message };
+      }
+    }
+
+    return { success: true, results };
   }
 
   /**
-   * 发送到飞书
+   * 向钉钉发送通知
    */
-  async sendToFeishu(message, options = {}) {
-  if (!this.feishu) throw new Error('飞书未配置');
+  async sendToDingTalk(message) {
+    if (!this.config.dingtalk.webhook) {
+      throw new Error('未配置钉钉 webhook');
+    }
 
-  // 这里应该调用飞书的 API 发送消息
-  // 简化实现：直接输出日志
- console.log('[飞书通知]', message.type, message.content);
-    
-   // 实际使用时需要调用飞书 API
-  // await axios.post(feishuWebhookUrl, message.formatted);
-    
- return { success: true, platform: 'feishu' };
+    const payload = this.formatDingTalkMessage(message);
+    const response = await axios.post(this.config.dingtalk.webhook, payload, {
+      headers: {
+        'Content-Type': 'application/json'
+      }
+    });
+
+    return { success: true, data: response.data };
   }
 
   /**
-   * 格式化工作流启动通知
+   * 格式化钉钉消息
    */
-  formatWorkflowStart(workflowId, stage, estimatedTime) {
-    return {
-     type: 'workflowStart',
-    content: `工作流 ${workflowId} 已启动，当前阶段：${stage}，预计时间：${estimatedTime}`,
-     formatted: {
-        dingtalk: {
+  formatDingTalkMessage(message) {
+    if (typeof message === 'string') {
+      return {
+        msgtype: 'text',
+        text: { content: message }
+      };
+    }
+
+    // 如果消息已经包含了钉钉特定格式，直接返回
+    if (message.formatted && message.formatted.dingtalk) {
+      return message.formatted.dingtalk;
+    }
+
+    // 根据消息类型格式化
+    switch (message.type) {
+      case 'task-started':
+        return {
           msgtype: 'markdown',
-         markdown: {
-           title: '工作流已启动',
-           text: `## 🚀 工作流已启动\n\n` +
-                  `- **工作流 ID**: ${workflowId}\n` +
-                  `- **当前阶段**: ${stage}\n` +
-                  `- **预计时间**: ${estimatedTime}\n\n` +
-                  `请稍候，完成后将通知您。`
+          markdown: {
+            title: '🚀 任务已启动',
+            text: `## 🚀 任务已启动\n\n- **任务 ID**: ${message.taskId}\n- **命令**: ${message.command}\n- **描述**: ${message.description}`
           }
-        },
-       feishu: {
-          msg_type: 'interactive',
-         card: {
-           header: {
-            title: { tag: 'plain_text', content: '🚀 工作流已启动' },
-             template: 'blue'
-           },
-           elements: [
-             {
-              tag: 'div',
-               text: {
-                tag: 'lark_md',
-                 content: `**工作流 ID**: ${workflowId}\n**当前阶段**: ${stage}\n**预计时间**: ${estimatedTime}`
-               }
-             }
-           ]
-         }
-       }
-     }
-    };
-  }
-
-  /**
-   * 格式化阶段完成通知
-   */
-  formatStageComplete(stage, result) {
- const emojis = {
-      analyze: '📋',
-      design: '🎨',
-    code: '💻',
-      test: '🧪',
-      deploy: '🚀'
-    };
-
- const emoji = emojis[stage] || '✅';
-    
-    return {
-     type: 'stageComplete',
-    content: `${stage} 阶段已完成`,
-     formatted: {
-        dingtalk: {
+        };
+        
+      case 'task-progress':
+        return {
           msgtype: 'markdown',
-         markdown: {
-           title: `${stage} 完成`,
-           text: `## ${emoji} ${stage} 完成\n\n${result.substring(0, 500)}...`
+          markdown: {
+            title: '📊 任务进度更新',
+            text: `## 📊 任务进度更新\n\n- **任务 ID**: ${message.taskId}\n- **状态**: ${message.status}\n- **进度**: ${message.progress}%\n- **详情**: ${message.details || '处理中...'}`  
           }
-        },
-       feishu: {
-          msg_type: 'interactive',
-         card: {
-           header: {
-            title: { tag: 'plain_text', content: `${emoji} ${stage} 完成` },
-             template: 'green'
-           },
-           elements: [
-             {
-              tag: 'markdown',
-              content: result.substring(0, 800) + '...'
-             }
-           ]
-         }
-       }
-     }
-    };
-  }
-
-  /**
-   * 格式化错误通知
-   */
-  formatError(workflowId, errorMessage) {
-    return {
-     type: 'error',
-    content: `工作流 ${workflowId} 执行失败：${errorMessage}`,
-     formatted: {
-        dingtalk: {
-          msgtype: 'actionCard',
-         actionCard: {
-           title: '❌ 工作流执行失败',
-           text: `## ❌ 工作流执行失败\n\n` +
-                  `- **工作流 ID**: ${workflowId}\n` +
-                  `- **错误信息**: ${errorMessage}`
-          }
-        },
-       feishu: {
-          msg_type: 'interactive',
-         card: {
-           header: {
-            title: { tag: 'plain_text', content: '❌ 工作流执行失败' },
-             template: 'red'
-           },
-           elements: [
-             {
-              tag: 'div',
-               text: {
-                tag: 'lark_md',
-                 content: `**工作流 ID**: ${workflowId}\n\n**错误信息**:\n${errorMessage}`
-               }
-             }
-           ]
-         }
-       }
-     }
-    };
-  }
-
-  /**
-   * 格式化每日站会报告
-   */
-  formatDailyReport(date, stats) {
-  let content = `## 📊 每日站会报告 - ${date}\n\n`;
-    
- content += `### 今日概览\n`;
- content += `- 启动工作流：**${stats.started}** 个\n`;
- content += `- 完成工作流：**${stats.completed}** 个\n`;
- content += `- 失败工作流：**${stats.failed}** 个\n\n`;
-
-  if (stats.topCommands && stats.topCommands.length> 0) {
-    content += `### 常用命令\n`;
-   stats.topCommands.forEach((cmd, index) => {
-      content += `${index +1}. \`${cmd.name}\` - ${cmd.count} 次\n`;
-     });
-   }
-
-    return {
-     type: 'dailyReport',
-    content: `每日站会报告 (${date})`,
-     formatted: {
-        dingtalk: {
+        };
+        
+      case 'task-completed':
+        return {
           msgtype: 'markdown',
-         markdown: {
-           title: '每日站会报告',
-           text: content
+          markdown: {
+            title: '✅ 任务已完成',
+            text: `## ✅ 任务已完成\n\n- **任务 ID**: ${message.taskId}\n- **命令**: ${message.command}\n- **输出目录**: ${message.outputDir || 'N/A'}\n\n请及时查看生成的代码。`
           }
-        },
-       feishu: {
+        };
+        
+      case 'task-failed':
+        return {
+          msgtype: 'markdown',
+          markdown: {
+            title: '❌ 任务执行失败',
+            text: `## ❌ 任务执行失败\n\n- **任务 ID**: ${message.taskId}\n- **命令**: ${message.command}\n- **错误**: ${message.error}\n\n请及时排查问题。`
+          }
+        };
+        
+      case 'test':
+        return {
+          msgtype: 'markdown',
+          markdown: {
+            title: '🧪 测试通知',
+            text: '## 🧪 测试通知\n\n如果您收到此消息，说明通知系统工作正常。'
+          }
+        };
+        
+      default:
+        return {
+          msgtype: 'text',
+          text: { content: message.content || JSON.stringify(message) }
+        };
+    }
+  }
+
+  /**
+   * 向飞书发送通知
+   */
+  async sendToFeishu(message) {
+    if (!this.config.feishu.webhook) {
+      throw new Error('未配置飞书 webhook');
+    }
+
+    const payload = this.formatFeishuMessage(message);
+    const response = await axios.post(this.config.feishu.webhook, payload, {
+      headers: {
+        'Content-Type': 'application/json'
+      }
+    });
+
+    return { success: true, data: response.data };
+  }
+
+  /**
+   * 格式化飞书消息
+   */
+  formatFeishuMessage(message) {
+    if (typeof message === 'string') {
+      return {
+        msg_type: 'text',
+        content: { text: message }
+      };
+    }
+
+    // 如果消息已经包含了飞书特定格式，直接返回
+    if (message.formatted && message.formatted.feishu) {
+      return message.formatted.feishu;
+    }
+
+    // 根据消息类型格式化
+    switch (message.type) {
+      case 'task-started':
+        return {
           msg_type: 'interactive',
-         card: {
-           header: {
-            title: { tag: 'plain_text', content: '📊 每日站会报告' },
-             template: 'blue'
-           },
-           elements: [
-             {
-              tag: 'markdown',
-              content
-             }
-           ]
-         }
-       }
-     }
+          card: {
+            config: { wide_screen_mode: true },
+            header: { 
+              template: "blue", 
+              title: { tag: "plain_text", content: "🚀 任务已启动" } 
+            },
+            elements: [
+              {
+                tag: "div",
+                text: {
+                  tag: "lark_md",
+                  content: `**任务 ID**: ${message.taskId}\n**命令**: ${message.command}\n**描述**: ${message.description}`
+                }
+              }
+            ]
+          }
+        };
+        
+      case 'task-progress':
+        return {
+          msg_type: 'interactive',
+          card: {
+            config: { wide_screen_mode: true },
+            header: { 
+              template: "blue", 
+              title: { tag: "plain_text", content: "📊 任务进度更新" } 
+            },
+            elements: [
+              {
+                tag: "div",
+                text: {
+                  tag: "lark_md",
+                  content: `**任务 ID**: ${message.taskId}\n**状态**: ${message.status}\n**进度**: ${message.progress}%\n**详情**: ${message.details || '处理中...'}`
+                }
+              }
+            ]
+          }
+        };
+        
+      case 'task-completed':
+        return {
+          msg_type: 'interactive',
+          card: {
+            config: { wide_screen_mode: true },
+            header: { 
+              template: "green", 
+              title: { tag: "plain_text", content: "✅ 任务已完成" } 
+            },
+            elements: [
+              {
+                tag: "div",
+                text: {
+                  tag: "lark_md",
+                  content: `**任务 ID**: ${message.taskId}\n**命令**: ${message.command}\n**输出目录**: ${message.outputDir || 'N/A'}\n\n请及时查看生成的代码。`
+                }
+              }
+            ]
+          }
+        };
+        
+      case 'task-failed':
+        return {
+          msg_type: 'interactive',
+          card: {
+            config: { wide_screen_mode: true },
+            header: { 
+              template: "red", 
+              title: { tag: "plain_text", content: "❌ 任务执行失败" } 
+            },
+            elements: [
+              {
+                tag: "div",
+                text: {
+                  tag: "lark_md",
+                  content: `**任务 ID**: ${message.taskId}\n**命令**: ${message.command}\n**错误**: ${message.error}\n\n请及时排查问题。`
+                }
+              }
+            ]
+          }
+        };
+        
+      case 'test':
+        return {
+          msg_type: 'interactive',
+          card: {
+            config: { wide_screen_mode: true },
+            header: { 
+              template: "blue", 
+              title: { tag: "plain_text", content: "🧪 测试通知" } 
+            },
+            elements: [
+              {
+                tag: "div",
+                text: {
+                  tag: "lark_md",
+                  content: "如果您收到此消息，说明通知系统工作正常。"
+                }
+              }
+            ]
+          }
+        };
+        
+      default:
+        return {
+          msg_type: 'text',
+          content: { text: message.content || JSON.stringify(message) }
+        };
+    }
+  }
+
+  /**
+   * 发送任务开始通知
+   */
+  async sendTaskStarted(task) {
+    const message = {
+      type: 'task-started',
+      taskId: task.id,
+      command: task.command,
+      description: task.params
     };
+    
+    return await this.sendToAll(message);
   }
 
   /**
-   * 将消息加入队列
+   * 发送任务进度通知
    */
-  queueMessage(message, options = {}) {
-  this.messageQueue.push({ message, options, timestamp: Date.now() });
+  async sendTaskProgress(task) {
+    const message = {
+      type: 'task-progress',
+      taskId: task.id,
+      status: task.status,
+      progress: task.progress,
+      details: task.logs?.slice(-1)[0]?.message || '处理中...'
+    };
     
-  if (!this.processing) {
-    this.processQueue();
-   }
+    return await this.sendToAll(message);
   }
 
   /**
-   * 处理消息队列
+   * 发送任务完成通知
    */
-  async processQueue() {
-  if (this.processing || this.messageQueue.length === 0) return;
+  async sendTaskCompleted(task) {
+    const message = {
+      type: 'task-completed',
+      taskId: task.id,
+      command: task.command,
+      outputDir: task.outputDir
+    };
     
-  this.processing = true;
-    
-  while (this.messageQueue.length > 0) {
-    const { message, options } = this.messageQueue.shift();
-    await this.sendToAll(message, options);
-   }
-    
-  this.processing = false;
+    return await this.sendToAll(message);
   }
 
   /**
-   * 清空队列
+   * 发送任务失败通知
    */
-  clearQueue() {
-  this.messageQueue = [];
+  async sendTaskFailed(task) {
+    const message = {
+      type: 'task-failed',
+      taskId: task.id,
+      command: task.command,
+      error: task.error || '未知错误'
+    };
+    
+    return await this.sendToAll(message);
   }
 
   /**
-   * 获取队列状态
+   * 发送测试通知
    */
-  getQueueStatus() {
- return {
-     pending: this.messageQueue.length,
-    processing: this.processing
-   };
+  async sendTestNotification() {
+    const message = { type: 'test' };
+    return await this.sendToAll(message);
   }
 }
 

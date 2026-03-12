@@ -5,6 +5,7 @@
  */
 
 const axios = require('axios');
+const crypto = require('crypto');
 
 class CodingPlanService {
  constructor(config = {}) {
@@ -67,39 +68,130 @@ class CodingPlanService {
  }
 
  /**
+  * 计算TC3-HMAC-SHA256签名
+  */
+ async calculateTC3HMACSHA256(secretId, secretKey, region, action, version, timestamp, endpoint, payload) {
+    // 1. 构造标准化请求
+    const httpRequestMethod = 'POST';
+    const canonicalUri = '/';
+    const canonicalQueryString = '';
+    const contentType = 'application/json; charset=utf-8';
+    
+    const canonicalHeaders = `content-type:${contentType}\nhost:${endpoint}\n`;
+    const signedHeaders = 'content-type;host';
+    
+    // 对请求载荷进行哈希
+    const hashedRequestPayload = crypto.createHash('sha256').update(payload).digest('hex');
+    
+    const canonicalRequest = httpRequestMethod + '\n' +
+                           canonicalUri + '\n' +
+                           canonicalQueryString + '\n' +
+                           canonicalHeaders + '\n' +
+                           signedHeaders + '\n' +
+                           hashedRequestPayload;
+
+    // 2. 拼接待签名字符串
+    const algorithm = 'TC3-HMAC-SHA256';
+    const hashedCanonicalRequest = crypto.createHash('sha256').update(canonicalRequest).digest('hex');
+    
+    // 日期格式为 YYYY-MM-DD
+    const date = new Date(timestamp * 1000).toISOString().slice(0, 10);
+    const credentialScope = date + '/' + region + '/' + 'tmt' + '/' + 'tc3_request'; // tmt是翻译服务示例，实际应根据具体服务调整
+    
+    const stringToSign = algorithm + '\n' +
+                        timestamp + '\n' +
+                        credentialScope + '\n' +
+                        hashedCanonicalRequest;
+
+    // 3. 计算签名
+    const kDate = crypto.createHmac('sha256', 'TC3' + secretKey)
+                         .update(date)
+                         .digest();
+    const kService = crypto.createHmac('sha256', kDate)
+                            .update(region)
+                            .digest();
+    const kSigning = crypto.createHmac('sha256', kService)
+                           .update('tmt') // 实际应根据具体服务调整
+                           .digest();
+    const kSubService = crypto.createHmac('sha256', kSigning)
+                              .update('tc3_request')
+                              .digest();
+    const signature = crypto.createHmac('sha256', kSubService)
+                            .update(stringToSign)
+                            .digest('hex');
+
+    // 4. 拼接 Authorization
+    const authorization = algorithm + ' ' +
+                         'Credential=' + secretId + '/' + credentialScope + ', ' +
+                         'SignedHeaders=' + signedHeaders + ', ' +
+                         'Signature=' + signature;
+
+    return authorization;
+ }
+
+ /**
   * 调用腾讯云混元 API
   */
  async callTencent(prompt, model = 'hunyuan-code-pro') {
-  // 腾讯云需要签名算法，这里简化处理
-  // 实际应该使用腾讯云的 SDK 进行签名
- const endpoint = this.config.tencent.endpoint;
-  
- try {
-   // TODO: 实现腾讯云签名算法
-  const response = await axios.post(
-     endpoint,
-    {
+    const endpoint = this.config.tencent.endpoint || 'hunyuan.tencentcloudapi.com';
+    const region = this.config.tencent.region || 'ap-beijing'; // 默认北京region
+    const action = 'ChatCompletions';
+    const version = '2023-09-01';
+    
+    // 构建请求载荷
+    const payload = JSON.stringify({
       Model: model,
-     Messages: [
-       { Role: 'system', Content: '你是一个专业的 AI 编程助手。' },
-       { Role: 'user', Content: prompt }
-     ]
-    },
-    {
-     headers: {
-       'X-TC-Action': 'ChatCompletions',
-       'X-TC-Version': '2023-09-01',
-       'X-TC-Region': 'ap-guangzhou',
-       'Authorization': 'TODO-Implement-Signature', // 需要实现 TC3-HMAC-SHA256 签名
-       'Content-Type': 'application/json'
-     }
+      Messages: [
+        { Role: 'system', Content: '你是一个专业的 AI 编程助手，擅长编写高质量代码。' },
+        { Role: 'user', Content: prompt }
+      ],
+      Stream: false
+    });
+    
+    // 获取当前时间戳
+    const timestamp = Math.floor(Date.now() / 1000);
+    
+    // 计算签名
+    const authorization = await this.calculateTC3HMACSHA256(
+      this.config.tencent.secretId,
+      this.config.tencent.secretKey,
+      region,
+      action,
+      version,
+      timestamp,
+      endpoint,
+      payload
+    );
+
+    try {
+      const response = await axios.post(
+        `https://${endpoint}`,
+        payload,
+        {
+          headers: {
+            'Authorization': authorization,
+            'Content-Type': 'application/json; charset=utf-8',
+            'Host': endpoint,
+            'X-TC-Action': action,
+            'X-TC-Version': version,
+            'X-TC-Region': region,
+            'X-TC-Timestamp': timestamp,
+          }
+        }
+      );
+      
+      // 腾讯云API响应格式可能略有不同，需要根据实际API文档调整
+      return response.data.Response?.Choices?.[0]?.Message?.Content || 
+             response.data.Response?.ResponseText || 
+             'API响应格式不正确';
+    } catch (error) {
+      if (error.response) {
+        // API返回错误信息
+        throw new Error(`腾讯云 API 调用失败：${error.response.data.Response?.Error?.Message || error.message}`);
+      } else {
+        throw new Error(`腾讯云 API 调用失败：${error.message}`);
+      }
     }
-   );
-   
-   return response.data.Choices[0].Message.Content;
- } catch (error) {
-   throw new Error(`腾讯云 API 调用失败：${error.message}`);
- }
  }
 
  /**
