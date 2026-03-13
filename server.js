@@ -26,6 +26,66 @@ app.use(express.json());
 // 全局事件发射器（用于任务状态更新）
 const taskEmitter = new EventEmitter();
 
+// 配置文件路径
+const CONFIG_DIR = path.join(__dirname, 'config');
+const CODING_PLAN_CONFIG_FILE = path.join(CONFIG_DIR, 'coding-plan.json');
+
+// 确保配置目录存在
+if (!fs.existsSync(CONFIG_DIR)) {
+  fs.mkdirSync(CONFIG_DIR, { recursive: true });
+}
+
+ // 从配置文件读取 Coding Plan 配置
+ function loadCodingPlanConfig() {
+   const defaultConfig = {
+     ali: {
+       enabled: false,
+       apiKey: '',
+       endpoint: 'https://dashscope.aliyuncs.com/api/v1',
+       planType: 'qwen-coder-plus'
+     },
+     tencent: {
+       enabled: false,
+       secretId: '',
+       secretKey: '',
+       endpoint: 'https://hunyuan.tencentcloudapi.com',
+       planType: 'hunyuan-code-pro'
+     },
+     baidu: {
+       enabled: false,
+       apiKey: '',
+       secretKey: '',
+       endpoint: 'https://aip.baidubce.com/rpc/2.0/ai_custom/v1',
+       planType: 'ernie-bot-code-pro'
+     },
+     custom: {
+       enabled: false,
+       apiKey: '',
+       endpoint: '',
+       planType: ''
+     }
+   };
+
+   try {
+     if (fs.existsSync(CODING_PLAN_CONFIG_FILE)) {
+       const fileContent = fs.readFileSync(CODING_PLAN_CONFIG_FILE, 'utf8');
+       const config = JSON.parse(fileContent);
+       console.log('✅ 已从配置文件加载 Coding Plan 配置');
+       return config;
+     }
+   } catch (error) {
+     console.error('❌ 加载配置文件失败:', error.message);
+   }
+   
+   // 如果配置文件不存在，创建默认配置
+   fs.writeFileSync(CODING_PLAN_CONFIG_FILE, JSON.stringify(defaultConfig, null, 2));
+   console.log('✅ 已创建默认 Coding Plan 配置文件');
+   return defaultConfig;
+ }
+
+// 加载配置
+const codingPlanConfig = loadCodingPlanConfig();
+
 // 机器人配置（从环境变量读取）
 const robotConfig = {
  dingtalk: {
@@ -111,6 +171,11 @@ const guiPath= path.join(__dirname, 'web-gui', 'dist');
 if (fs.existsSync(guiPath)) {
  app.use(express.static(guiPath));
  console.log(`✅ Web GUI 服务已启动：${guiPath}`);
+ 
+ // SPA路由处理：将所有非API路由重定向到index.html
+ app.get(/^(?!\/api\/).*$/, (req, res) => {
+   res.sendFile(path.join(guiPath, 'index.html'));
+ });
 } else {
  console.warn('⚠️  Web GUI 未找到，请先构建 web-gui');
 }
@@ -168,6 +233,31 @@ app.get('/api/tasks/:taskId', (req, res) => {
  res.json(task);
 });
 
+// 终止任务
+app.post('/api/tasks/:taskId/terminate', (req, res) => {
+ const taskId = req.params.taskId;
+ const task = tasks.get(taskId);
+ 
+ if (!task) {
+   return res.status(404).json({ error: 'Task not found' });
+ }
+ 
+ // 标记任务为已取消
+ task.status = 'cancelled';
+ task.updatedAt = new Date().toISOString();
+ task.logs.push({
+   timestamp: new Date().toISOString(),
+   message: '⚠️ 任务已被用户强制终止'
+ });
+ 
+ // 保存更新后的任务状态
+ tasks.set(taskId, task);
+ saveTaskToDisk(taskId, task);
+ taskEmitter.emit('taskUpdate', task);
+ 
+ res.json({ success: true, message: 'Task terminated' });
+});
+
 // 删除任务
 app.delete('/api/tasks/:taskId', (req, res) => {
  const taskId = req.params.taskId;
@@ -177,35 +267,24 @@ app.delete('/api/tasks/:taskId', (req, res) => {
    return res.status(404).json({ error: 'Task not found' });
  }
  
- // 如果任务正在运行，需要特殊处理
- const isRunning = ['analyzing', 'designing', 'coding', 'testing', 'reviewing'].includes(task.status);
- 
- if (isRunning) {
-   // 标记任务为已取消，而不是直接删除
-   task.status = 'cancelled';
-   task.progress = 0;
-   task.updatedAt = new Date().toISOString();
-   task.logs.push({
-     timestamp: new Date().toISOString(),
-     message: '⚠️ 任务已被用户取消'
-   });
+ // 直接删除任务，不管状态如何
+ const deleted = tasks.delete(taskId);
+ if (deleted) {
+   removeTaskFromDisk(taskId); // 从磁盘删除任务文件
    
-   // 保存更新后的任务状态
-   tasks.set(taskId, task);
-   saveTaskToDisk(taskId, task);
-   taskEmitter.emit('taskUpdate', task);
-   
-   // 注意：由于JavaScript是单线程的，无法真正"停止"正在执行的异步操作
-   // 但可以通过状态检查在后续步骤中跳过处理
- } else {
-   // 直接删除非运行中的任务
-   const deleted = tasks.delete(taskId);
-   if (deleted) {
-     removeTaskFromDisk(taskId); // 从磁盘删除
+   // 删除对应的生成代码文件夹
+   try {
+     const outputDir = path.join(__dirname, 'generated-code', taskId);
+     if (fs.existsSync(outputDir)) {
+       fs.rmSync(outputDir, { recursive: true, force: true }); // 递归删除文件夹
+       console.log(`✅ 已删除任务文件夹: ${outputDir}`);
+     }
+   } catch (error) {
+     console.error(`❌ 删除任务文件夹失败 ${taskId}:`, error.message);
    }
  }
  
- res.json({ success: true, message: isRunning ? 'Task cancelled' : 'Task deleted' });
+ res.json({ success: true, message: 'Task deleted' });
 });
 
 // 手动重试任务
@@ -244,43 +323,46 @@ app.post('/api/tasks/:taskId/retry', (req, res) => {
 
 // ==================== 任务执行引擎 ====================
 
-/**
+ /**
  * 真实的 AI 代码生成任务执行引擎
  */
 async function executeTask(taskId, task) {
- // 检查任务是否已被取消或删除
+ // 检查任务是否已被取消
  const currentTask = tasks.get(taskId);
  if (!currentTask || currentTask.status === 'cancelled') {
    console.log(`任务 ${taskId} 已被取消或删除，跳过执行`);
    return;
  }
  
+ // 从配置文件读取配置
+ const config = loadCodingPlanConfig();
+ console.log('executeTask - 从配置文件加载的配置:', config);
  const codingPlan = new CodingPlanService({
   ali: {
-   enabled: process.env.ALI_ENABLED === 'true',
-   apiKey: process.env.ALI_API_KEY,
-   endpoint: process.env.ALI_ENDPOINT,
-   planType: process.env.ALI_PLAN_TYPE || 'qwen-coder-plus'
+   enabled: config.ali?.enabled || false,
+   apiKey: config.ali?.apiKey || '',
+   endpoint: config.ali?.endpoint || 'https://dashscope.aliyuncs.com/api/v1',
+   planType: config.ali?.planType || 'qwen-coder-plus'
   },
  tencent: {
-  enabled: process.env.TENCENT_ENABLED === 'true',
-  secretId: process.env.TENCENT_SECRET_ID,
-  secretKey: process.env.TENCENT_SECRET_KEY,
-  endpoint: process.env.TENCENT_ENDPOINT,
-  planType: process.env.TENCENT_PLAN_TYPE || 'hunyuan-code-pro'
+  enabled: config.tencent?.enabled || false,
+  secretId: config.tencent?.secretId || '',
+  secretKey: config.tencent?.secretKey || '',
+  endpoint: config.tencent?.endpoint || 'https://hunyuan.tencentcloudapi.com',
+  planType: config.tencent?.planType || 'hunyuan-code-pro'
   },
   baidu: {
-  enabled: process.env.BAIDU_ENABLED === 'true',
-  apiKey: process.env.BAIDU_API_KEY,
-  secretKey: process.env.BAIDU_SECRET_KEY,
-  endpoint: process.env.BAIDU_ENDPOINT,
-  planType: process.env.BAIDU_PLAN_TYPE || 'ernie-bot-code-pro'
+  enabled: config.baidu?.enabled || false,
+  apiKey: config.baidu?.apiKey || '',
+  secretKey: config.baidu?.secretKey || '',
+  endpoint: config.baidu?.endpoint || 'https://aip.baidubce.com/rpc/2.0/ai_custom/v1',
+  planType: config.baidu?.planType || 'ernie-bot-code-pro'
   },
   custom: {
-  enabled: process.env.CUSTOM_ENABLED === 'true',
-  apiKey: process.env.CUSTOM_API_KEY,
-  endpoint: process.env.CUSTOM_ENDPOINT,
-  planType: process.env.CUSTOM_PLAN_TYPE
+   enabled: config.custom?.enabled || false,
+   apiKey: config.custom?.apiKey || '',
+   endpoint: config.custom?.endpoint || '',
+   planType: config.custom?.planType || ''
   }
  });
 
@@ -302,31 +384,33 @@ async function executeTask(taskId, task) {
   }, task.maxRetries, 2000);
   addLog(taskId, '✅ 需求分析完成');
   
+  // 创建输出目录
+ const outputDir = path.join(__dirname, 'generated-code', taskId);
+  fs.mkdirSync(outputDir, { recursive: true });
+  
   // 阶段 2: 设计文档
   updateTaskStatus(taskId, 'designing', 40);
   addLog(taskId, '🎨 设计文档生成中...');
   
  const designPrompt = promptTemplates.getTemplate('designDocument', aiResponse);
-  aiResponse = await callWithRetry(async () => {
+  const designDoc = await callWithRetry(async () => {
     return await codingPlan.generateCode(designPrompt, task.options?.techStack || []);
   }, task.maxRetries, 2000);
+  
+  // 保存设计文档到任务目录
+  const designDocPath = path.join(outputDir, 'DESIGN_DOC.md');
+  fs.writeFileSync(designDocPath, designDoc);
+  
   addLog(taskId, '✅ 设计文档完成');
   
   // 阶段 3: 代码生成（核心）
   updateTaskStatus(taskId, 'coding', 60);
   addLog(taskId, '💻 代码编写中...');
   
-  // 根据命令类型选择合适的模板
-  let codeGenerationPrompt;
-  if (task.command.includes('game') || task.params?.toLowerCase().includes('游戏')) {
- codeGenerationPrompt = promptTemplates.getTemplate('html5Game', task.params || task.command);
-  } else if (task.command.includes('react') || task.command.includes('component')) {
- codeGenerationPrompt = promptTemplates.getTemplate('reactComponent', task.params || task.command);
-  } else if (task.command.includes('api') || task.command.includes('backend')) {
- codeGenerationPrompt = promptTemplates.getTemplate('nodejsAPI', task.params || task.command);
-  } else {
- codeGenerationPrompt = promptTemplates.getTemplate('codeGeneration', aiResponse, task.options?.techStack || []);
-  }
+  // 使用通用模板，让AI根据用户需求自主判断生成什么类型的代码
+  let codeGenerationPrompt = promptTemplates.getTemplate('codeGeneration', 
+    `基于以下用户需求生成完整代码：\n\n${task.params || task.command}\n\n${aiResponse}`, 
+    task.options?.techStack || []);
   
  const generatedCode = await callWithRetry(async () => {
     return await codingPlan.generateCode(codeGenerationPrompt, task.options?.techStack || []);
@@ -352,10 +436,6 @@ async function executeTask(taskId, task) {
     return await codingPlan.generateCode(reviewPrompt);
   }, task.maxRetries, 2000);
   addLog(taskId, '✅ 代码审查完成');
-  
-  // 创建输出目录并保存生成的文件
- const outputDir = path.join(__dirname, '..', 'generated-code', taskId);
-  fs.mkdirSync(outputDir, { recursive: true });
   
   // 解析生成的代码并保存为文件
   saveGeneratedFiles(generatedCode, outputDir);
@@ -405,8 +485,13 @@ async function executeTask(taskId, task) {
       // 更新任务到磁盘
       saveTaskToDisk(taskId, retryTask);
       
-      // 延迟后重试
-      setTimeout(() => executeTask(taskId, retryTask), 3000);
+      // 延迟后重试 - 在重试前重新加载最新配置
+      setTimeout(() => {
+        // 重新加载配置，确保使用最新配置进行重试
+        const freshConfig = loadCodingPlanConfig();
+        console.log('重试任务时重新加载的配置:', freshConfig);
+        executeTask(taskId, retryTask);
+      }, 3000);
       return;
     } else {
       // 任务不存在或已被取消，直接标记为失败
@@ -444,42 +529,196 @@ async function callWithRetry(fn, maxRetries = 3, delay = 1000) {
 
 /**
  * 解析 AI 生成的代码并保存为文件
+ * AI通常返回标准格式：``` 文件名：xxx ```\n```lang\n代码\n```\n```
  */
 function saveGeneratedFiles(codeContent, outputDir) {
- // 匹配代码块格式：文件名：path/to/file.js\n```\ncode\n```
- const fileRegex = /文件名：([\w\-./\s]+)\n```([\s\S]*?)```/g;
- let match;
- const files = [];
-
- while ((match = fileRegex.exec(codeContent)) !== null) {
-  files.push({
- path: match[1].trim(),
- content: match[2].trim()
-  });
- }
-
- // 如果没有找到带文件名的代码块，尝试保存整个内容为单个文件
- if (files.length === 0) {
-  // 检查是否是 HTML
-  if (codeContent.includes('<!DOCTYPE html>') || codeContent.includes('<html')) {
-  fs.writeFileSync(path.join(outputDir, 'index.html'), codeContent);
-  } else {
-  fs.writeFileSync(path.join(outputDir, 'main.js'), codeContent);
+  const files = [];
+  const extractedFilePaths = new Set();
+  
+  // 按行分割内容以便解析
+  const lines = codeContent.split(/\r?\n/);
+  let i = 0;
+  
+  while (i < lines.length) {
+    const line = lines[i].trim();
+    
+    // 寻找 "文件名：" 模式 - 正确识别格式：``` -> 文件名：xxx -> ``` -> ```lang -> 代码内容 -> ```
+    if (line.startsWith('```') && lines[i + 1]?.includes('文件名：')) {
+      // 解析文件名
+      const fileNameLine = lines[i + 1]; // 文件名：xxx
+      const fileNameMatch = fileNameLine.match(/文件名[:：]\s*([^\n`"']+\.(?:js|html|css|json|md|txt|py|java|cpp|c|ts|jsx|tsx))/);
+      
+      if (fileNameMatch) {
+        const filePath = fileNameMatch[1].trim().replace(/[`"'*]/g, '');
+        // 跳过 ```、文件名行、```、```lang 四行
+        i += 4;
+        
+        // 现在收集代码内容，直到遇到结束的 ```
+        const fileContentLines = [];
+        while (i < lines.length && !lines[i].trim().startsWith('```')) {
+          fileContentLines.push(lines[i]);
+          i++;
+        }
+        
+        // 跳过结束的 ```
+        if (i < lines.length && lines[i].trim().startsWith('```')) {
+          i++;
+        }
+        
+        // 移除可能的尾随空行
+        let fileContent = fileContentLines.join('\n');
+        fileContent = fileContent.replace(/\s+$/, ''); // 移除末尾空白字符
+        
+        // 确保文件路径包含扩展名且不重复
+        if (filePath.includes('.') && !extractedFilePaths.has(filePath)) {
+          files.push({
+            path: filePath,
+            content: fileContent
+          });
+          extractedFilePaths.add(filePath);
+        }
+      } else {
+        i++; // 如果不是文件名格式，继续下一行
+      }
+    } else {
+      i++; // 继续下一行
+    }
   }
- return;
- }
 
- // 保存每个文件
- files.forEach(file => {
- const fullPath= path.join(outputDir, file.path);
- const dir = path.dirname(fullPath);
-  
-  // 创建目录
-  fs.mkdirSync(dir, { recursive: true });
-  
-  // 写入文件
-  fs.writeFileSync(fullPath, file.content);
- });
+  // 如果按上述格式没有找到文件，尝试其他格式
+  if (files.length === 0) {
+    // 尝试匹配：文件名：path/to/file.ext\n```\ncode\n```
+    const fileNameFirstPattern = /文件名[:：]\s*([^\n`"']+\.(?:js|html|css|json|md|txt|py|java|cpp|c|ts|jsx|tsx))\s*\n```(?:\w+)?\n([\s\S]*?)```\s*(?=\n|$|文件名[:：]|```[\s\n]*```)/g;
+    let match;
+    while ((match = fileNameFirstPattern.exec(codeContent)) !== null) {
+      const filePath = match[1].trim().replace(/[`"'*]/g, '');
+      const fileContent = match[2].trim();
+      
+      if (!extractedFilePaths.has(filePath)) {
+        files.push({
+          path: filePath,
+          content: fileContent
+        });
+        extractedFilePaths.add(filePath);
+      }
+    }
+
+    // 如果仍然没有匹配到，尝试匹配：```文件名：path/to/file.ext```\n```lang\ncode\n```
+    if (files.length === 0) {
+      const fileNamePattern = /```\s*文件名[:：]\s*([^\n`"']+\.(?:js|html|css|json|md|txt|py|java|cpp|c|ts|jsx|tsx))\s*```\s*\n```(?:\w+)?\n([\s\S]*?)```\s*(?=\n|$|```)/g;
+      while ((match = fileNamePattern.exec(codeContent)) !== null) {
+        const filePath = match[1].trim().replace(/[`"'*]/g, '');
+        const fileContent = match[2].trim();
+        
+        if (!extractedFilePaths.has(filePath)) {
+          files.push({
+            path: filePath,
+            content: fileContent
+          });
+          extractedFilePaths.add(filePath);
+        }
+      }
+    }
+
+    // 如果仍然没有匹配到，尝试匹配：```lang\n[filename]\n```code```
+    if (files.length === 0) {
+      const langThenFilePattern = /```(\w+)\s*([^\n`]*\.(?:js|html|css|json|md|txt|py|java|cpp|c|ts|jsx|tsx))\s*\n([\s\S]*?)```\s*(?=\n|$|```)/g;
+      while ((match = langThenFilePattern.exec(codeContent)) !== null) {
+        const filePath = match[2].trim().replace(/[`"'*]/g, '');
+        const fileContent = match[3] ? match[3].trim() : '';
+        
+        if (!extractedFilePaths.has(filePath)) {
+          files.push({
+            path: filePath,
+            content: fileContent
+          });
+          extractedFilePaths.add(filePath);
+        }
+      }
+    }
+
+    // 如果仍然没有匹配到，尝试匹配没有明确文件名的代码块
+    if (files.length === 0) {
+      // 匹配：```lang\n```code```
+      const codeBlockPattern = /```(\w+)?\s*\n([\s\S]*?)```\s*(?=\n|$|```)/g;
+      while ((match = codeBlockPattern.exec(codeContent)) !== null) {
+        const codeLang = match[1] ? match[1].toLowerCase() : '';
+        const fileContent = match[2].trim();
+        let extension = 'txt';
+
+        // 根据语言标识符确定文件扩展名
+        if (codeLang === 'html') extension = 'html';
+        else if (codeLang === 'css') extension = 'css';
+        else if (codeLang === 'javascript' || codeLang === 'js' || codeLang.includes('js')) extension = 'js';
+        else if (codeLang === 'json') extension = 'json';
+        else if (codeLang === 'md' || codeLang === 'markdown') extension = 'md';
+        else if (codeLang === 'python' || codeLang === 'py') extension = 'py';
+        else if (codeLang === 'java') extension = 'java';
+        else if (codeLang === 'cpp' || codeLang === 'c++') extension = 'cpp';
+        else if (codeLang === 'c') extension = 'c';
+        else if (codeLang === 'typescript' || codeLang === 'ts') extension = 'ts';
+        else if (codeLang === 'jsx') extension = 'jsx';
+        else if (codeLang === 'tsx') extension = 'tsx';
+
+        // 尝试从代码内容推断文件类型
+        if (extension === 'txt') {
+          if (fileContent.includes('<!DOCTYPE html>') || fileContent.includes('<html')) extension = 'html';
+          else if (fileContent.includes('import ') || fileContent.includes('function ') || fileContent.includes('const ') || fileContent.includes('let ')) extension = 'js';
+          else if (fileContent.includes('body {') || fileContent.includes('margin:')) extension = 'css';
+          else if (fileContent.includes('def ') || fileContent.includes('import ') || fileContent.includes('print(')) extension = 'py';
+        }
+
+        // 生成文件名
+        const fileName = `generated_${files.length + 1}.${extension}`;
+        if (!extractedFilePaths.has(fileName)) {
+          files.push({
+            path: fileName,
+            content: fileContent
+          });
+          extractedFilePaths.add(fileName);
+        }
+      }
+    }
+  }
+
+  // 如果没有找到任何代码块，尝试智能判断整个内容类型
+  if (files.length === 0) {
+    // 检查是否是 HTML 文件
+    if (codeContent.includes('<!DOCTYPE html>') || codeContent.includes('<html')) {
+      const htmlPath = path.join(outputDir, 'index.html');
+      fs.writeFileSync(htmlPath, codeContent);
+      console.log(`保存HTML文件: ${htmlPath}`);
+    } else if (codeContent.includes('import ') || codeContent.includes('export ') || codeContent.includes('function ') || codeContent.includes('const ') || codeContent.includes('let ')) {
+      // 检查是否是 JS 文件
+      const jsPath = path.join(outputDir, 'main.js');
+      fs.writeFileSync(jsPath, codeContent);
+      console.log(`保存JS文件: ${jsPath}`);
+    } else if (codeContent.includes('body {') || codeContent.includes('margin:') || codeContent.includes('padding:')) {
+      // 检查是否是 CSS 文件
+      const cssPath = path.join(outputDir, 'style.css');
+      fs.writeFileSync(cssPath, codeContent);
+      console.log(`保存CSS文件: ${cssPath}`);
+    } else {
+      // 默认保存为文本文件
+      const txtPath = path.join(outputDir, 'output.txt');
+      fs.writeFileSync(txtPath, codeContent);
+      console.log(`保存输出文件: ${txtPath}`);
+    }
+    return;
+  }
+
+  // 保存每个文件
+  files.forEach(file => {
+    const fullPath = path.join(outputDir, file.path);
+    const dir = path.dirname(fullPath);
+    
+    // 创建目录
+    fs.mkdirSync(dir, { recursive: true });
+    
+    // 写入文件
+    fs.writeFileSync(fullPath, file.content);
+    console.log(`保存文件: ${fullPath} (${file.content.length} 字符)`);
+  });
 }
 
 function updateTaskStatus(taskId, status, progress) {
@@ -613,35 +852,39 @@ function sendNotification(task, eventType) {
 
 // ==================== 代码下载 API ====================
 
-// 健康检查 - 大模型配置状态
+ // 健康检查 - 大模型配置状态（从配置文件读取）
 app.get('/api/health/llm-config', (req, res) => {
+  const config = loadCodingPlanConfig();
+  
   // 检查各种大模型的配置状态
   const llmConfig = {
     ali: {
-      enabled: process.env.ALI_ENABLED === 'true',
-      configured: process.env.ALI_ENABLED === 'true' && 
-                 process.env.ALI_API_KEY && 
-                 process.env.ALI_ENDPOINT
+      enabled: config.ali?.enabled || false,
+      configured: !!(config.ali?.enabled && config.ali?.apiKey && config.ali?.endpoint),
+      apiKey: config.ali?.apiKey ? '***' : '',
+      endpoint: config.ali?.endpoint || '',
+      planType: config.ali?.planType || 'qwen-coder-plus'
     },
     tencent: {
-      enabled: process.env.TENCENT_ENABLED === 'true',
-      configured: process.env.TENCENT_ENABLED === 'true' && 
-                  process.env.TENCENT_SECRET_ID && 
-                  process.env.TENCENT_SECRET_KEY && 
-                  process.env.TENCENT_ENDPOINT
+      enabled: config.tencent?.enabled || false,
+      configured: !!(config.tencent?.enabled && config.tencent?.secretId && config.tencent?.secretKey),
+      secretId: config.tencent?.secretId ? '***' : '',
+      endpoint: config.tencent?.endpoint || '',
+      planType: config.tencent?.planType || 'hunyuan-code-pro'
     },
     baidu: {
-      enabled: process.env.BAIDU_ENABLED === 'true',
-      configured: process.env.BAIDU_ENABLED === 'true' && 
-                  process.env.BAIDU_API_KEY && 
-                  process.env.BAIDU_SECRET_KEY && 
-                  process.env.BAIDU_ENDPOINT
+      enabled: config.baidu?.enabled || false,
+      configured: !!(config.baidu?.enabled && config.baidu?.apiKey && config.baidu?.secretKey),
+      apiKey: config.baidu?.apiKey ? '***' : '',
+      endpoint: config.baidu?.endpoint || '',
+      planType: config.baidu?.planType || 'ernie-bot-code-pro'
     },
     custom: {
-      enabled: process.env.CUSTOM_ENABLED === 'true',
-      configured: process.env.CUSTOM_ENABLED === 'true' && 
-                  process.env.CUSTOM_API_KEY && 
-                  process.env.CUSTOM_ENDPOINT
+      enabled: config.custom?.enabled || false,
+      configured: !!(config.custom?.enabled && config.custom?.apiKey && config.custom?.endpoint),
+      apiKey: config.custom?.apiKey ? '***' : '',
+      endpoint: config.custom?.endpoint || '',
+      planType: config.custom?.planType || ''
     }
   };
 
@@ -654,6 +897,103 @@ app.get('/api/health/llm-config', (req, res) => {
     timestamp: new Date().toISOString()
   });
 });
+
+// 获取 Coding Plan 配置
+app.get('/api/config/coding-plan', (req, res) => {
+  const config = loadCodingPlanConfig();
+  
+  // 隐藏敏感信息，使用与真实值相同长度的星号
+  const maskValue = (value) => {
+    if (!value) return '';
+    return '*'.repeat(value.length);
+  };
+  
+  // 隐藏敏感信息
+  const safeConfig = {
+    ali: {
+      enabled: config.ali?.enabled || false,
+      apiKey: maskValue(config.ali?.apiKey),
+      endpoint: config.ali?.endpoint || '',
+      planType: config.ali?.planType || 'qwen-coder-plus'
+    },
+    tencent: {
+      enabled: config.tencent?.enabled || false,
+      secretId: maskValue(config.tencent?.secretId),
+      secretKey: maskValue(config.tencent?.secretKey),
+      endpoint: config.tencent?.endpoint || '',
+      planType: config.tencent?.planType || 'hunyuan-code-pro'
+    },
+    baidu: {
+      enabled: config.baidu?.enabled || false,
+      apiKey: maskValue(config.baidu?.apiKey),
+      secretKey: maskValue(config.baidu?.secretKey),
+      endpoint: config.baidu?.endpoint || '',
+      planType: config.baidu?.planType || 'ernie-bot-code-pro'
+    },
+    custom: {
+      enabled: config.custom?.enabled || false,
+      apiKey: maskValue(config.custom?.apiKey),
+      endpoint: config.custom?.endpoint || '',
+      planType: config.custom?.planType || ''
+    }
+  };
+  
+  res.json(safeConfig);
+});
+
+// 保存 Coding Plan 配置
+app.post('/api/config/coding-plan', (req, res) => {
+  const { ali, tencent, baidu, custom } = req.body;
+  
+  const currentConfig = loadCodingPlanConfig();
+  
+  // 合并配置，只更新提供的字段
+  // 对于敏感字段，如果传入的是掩码值（***）或空值，则保留原始值
+  const newConfig = {
+    ali: { 
+      ...currentConfig.ali, 
+      ...ali,
+      apiKey: ali?.apiKey && ali.apiKey !== '***' && ali.apiKey.trim() !== '' ? ali.apiKey : currentConfig.ali?.apiKey || ''
+    },
+    tencent: { 
+      ...currentConfig.tencent, 
+      ...tencent,
+      secretId: tencent?.secretId && tencent.secretId !== '***' && tencent.secretId.trim() !== '' ? tencent.secretId : currentConfig.tencent?.secretId || '',
+      secretKey: tencent?.secretKey && tencent.secretKey !== '***' && tencent.secretKey.trim() !== '' ? tencent.secretKey : currentConfig.tencent?.secretKey || ''
+    },
+    baidu: { 
+      ...currentConfig.baidu, 
+      ...baidu,
+      apiKey: baidu?.apiKey && baidu.apiKey !== '***' && baidu.apiKey.trim() !== '' ? baidu.apiKey : currentConfig.baidu?.apiKey || '',
+      secretKey: baidu?.secretKey && baidu.secretKey !== '***' && baidu.secretKey.trim() !== '' ? baidu.secretKey : currentConfig.baidu?.secretKey || ''
+    },
+    custom: { 
+      ...currentConfig.custom, 
+      ...custom,
+      apiKey: custom?.apiKey && custom.apiKey !== '***' && custom.apiKey.trim() !== '' ? custom.apiKey : currentConfig.custom?.apiKey || ''
+    }
+  };
+  
+  try {
+    fs.writeFileSync(CODING_PLAN_CONFIG_FILE, JSON.stringify(newConfig, null, 2));
+    console.log('✅ Coding Plan 配置已保存', newConfig);
+    
+    // 返回安全的配置（隐藏敏感信息）
+    res.json({ 
+      success: true, 
+      message: '配置已保存',
+      config: {
+        ali: { ...newConfig.ali, apiKey: newConfig.ali?.apiKey ? '***' : '' },
+        tencent: { ...newConfig.tencent, secretId: newConfig.tencent?.secretId ? '***' : '', secretKey: newConfig.tencent?.secretKey ? '***' : '' },
+        baidu: { ...newConfig.baidu, apiKey: newConfig.baidu?.apiKey ? '***' : '', secretKey: newConfig.baidu?.secretKey ? '***' : '' },
+        custom: { ...newConfig.custom, apiKey: newConfig.custom?.apiKey ? '***' : '' }
+      }
+    });
+  } catch (error) {
+    console.error('❌ 保存配置失败:', error.message);
+    res.status(500).json({ success: false, error: '保存配置失败: ' + error.message });
+  }
+ });
 
 const archiver = require('archiver');
 
@@ -704,7 +1044,7 @@ app.get('/api/tasks/:taskId/logs/stream', (req, res) => {
 
 // ==================== 启动服务器 ====================
 
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 3009;
 
 app.listen(PORT, () => {
  console.log('\n========================================');

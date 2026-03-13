@@ -95,7 +95,7 @@ const MainLayout = () => {
             onClick={handleMenuClick}
           />
         </Sider>
-        <Layout>
+        {/* <Layout>
           <Content
             style={{
              margin: '24px 16px',
@@ -106,7 +106,7 @@ const MainLayout = () => {
           >
             <Outlet />
           </Content>
-        </Layout>
+        </Layout> */}
       </Layout>
     </Layout>
   );

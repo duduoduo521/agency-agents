@@ -2,8 +2,8 @@ import axios from 'axios';
 
 // 创建axios实例
 const apiClient = axios.create({
-  baseURL: 'http://localhost:3000/api', // 默认后端API地址
-  timeout: 30000, // 30秒超时
+  baseURL: '/api', // 使用相对路径，适配当前域名和端口
+  timeout: 60000, // 60秒超时
 });
 
 // 请求拦截器
@@ -43,6 +43,9 @@ export const taskApi = {
   // 创建任务
   createTask: (taskData) => apiClient.post('/tasks', taskData),
   
+  // 终止任务
+  terminateTask: (taskId) => apiClient.post(`/tasks/${taskId}/terminate`),
+
   // 删除任务
   deleteTask: (taskId) => apiClient.delete(`/tasks/${taskId}`),
   
@@ -66,41 +69,34 @@ export const healthApi = {
   // 检查大模型配置状态
   checkLlmConfig: async () => {
     try {
-      // 首先尝试调用后端API
+      // 尝试调用后端API
       const response = await apiClient.get('/health/llm-config');
       return response;
     } catch (error) {
-      // 如果后端API不可用，回退到检查localStorage
-      console.warn('后端健康检查API不可用，使用localStorage配置');
-      try {
-        const configStr = localStorage.getItem('the-code-agency-settings');
-        if (configStr) {
-          const config = JSON.parse(configStr);
-          const hasConfiguredLlm = 
-            (config.aliEnabled && config.aliApiKey) ||
-            (config.tencentEnabled && config.tencentSecretId && config.tencentSecretKey) ||
-            (config.baiduEnabled && config.baiduApiKey && config.baiduSecretKey) ||
-            (config.customEnabled && config.customApiKey);
-          
-          return {
-            data: {
-              configured: hasConfiguredLlm,
-              providers: {
-                ali: { enabled: config.aliEnabled, configured: config.aliEnabled && config.aliApiKey },
-                tencent: { enabled: config.tencentEnabled, configured: config.tencentEnabled && config.tencentSecretId && config.tencentSecretKey },
-                baidu: { enabled: config.baiduEnabled, configured: config.baiduEnabled && config.baiduApiKey && config.baiduSecretKey },
-                custom: { enabled: config.customEnabled, configured: config.customEnabled && config.customApiKey }
-              }
-            }
-          };
+      // 如果后端API不可用，返回错误状态
+      console.warn('后端健康检查API不可用');
+      return { 
+        data: { 
+          configured: false, 
+          providers: {
+            ali: { enabled: false, configured: false, apiKey: '', endpoint: '', planType: 'qwen-coder-plus' },
+            tencent: { enabled: false, configured: false, secretId: '', endpoint: '', planType: 'hunyuan-code-pro' },
+            baidu: { enabled: false, configured: false, apiKey: '', endpoint: '', planType: 'ernie-bot-code-pro' },
+            custom: { enabled: false, configured: false, apiKey: '', endpoint: '', planType: '' }
+          }
         }
-      } catch (e) {
-        console.error('从localStorage读取配置失败:', e);
-      }
-      // 默认返回未配置
-      return { data: { configured: false, providers: {} } };
+      };
     }
   },
+};
+
+// Coding Plan 配置 API
+export const configApi = {
+  // 获取 Coding Plan 配置
+  getCodingPlanConfig: () => apiClient.get('/config/coding-plan'),
+  
+  // 保存 Coding Plan 配置
+  saveCodingPlanConfig: (config) => apiClient.post('/config/coding-plan', config),
 };
 
 export default apiClient;

@@ -2,9 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { Card, Form, Input, Select, Switch, Button, Divider, message, Tabs, Space, Alert, Modal } from 'antd';
 import { RobotOutlined, ApiOutlined, GlobalOutlined, SafetyCertificateOutlined, CopyOutlined } from '@ant-design/icons';
 import { useApi } from '../contexts/ApiContext';
-
-// 配置存储键名
-const CONFIG_STORAGE_KEY = 'the-code-agency-settings';
+import { configApi } from '../services/api';
 
 const SettingsPage = () => {
   const [form] = Form.useForm();
@@ -23,211 +21,86 @@ const SettingsPage = () => {
   const [tencentEnabled, setTencentEnabled] = useState(false);
   const [baiduEnabled, setBaiduEnabled] = useState(false);
   const [customEnabled, setCustomEnabled] = useState(false);
-  const [showEnvGuide, setShowEnvGuide] = useState(false);
-  const [envVariables, setEnvVariables] = useState('');
-
-  // 从localStorage加载配置
-  const loadConfigFromStorage = () => {
-    try {
-      const configStr = localStorage.getItem(CONFIG_STORAGE_KEY);
-      if (configStr) {
-        return JSON.parse(configStr);
-      }
-    } catch (error) {
-      console.error('从localStorage加载配置失败:', error);
-    }
-    return null;
-  };
-
-  // 保存配置到localStorage
-  const saveConfigToStorage = (config) => {
-    try {
-      localStorage.setItem(CONFIG_STORAGE_KEY, JSON.stringify(config));
-      return true;
-    } catch (error) {
-      console.error('保存配置到localStorage失败:', error);
-      return false;
-    }
-  };
-
-  // 生成环境变量字符串
-  const generateEnvVariables = (config) => {
-    const envVars = [];
-    
-    // 阿里云配置
-    if (config.aliEnabled) {
-      envVars.push(`ALI_ENABLED=true`);
-      if (config.aliApiKey) envVars.push(`ALI_API_KEY=${config.aliApiKey}`);
-      if (config.aliEndpoint) envVars.push(`ALI_ENDPOINT=${config.aliEndpoint}`);
-      if (config.aliPlanType) envVars.push(`ALI_PLAN_TYPE=${config.aliPlanType}`);
-    } else {
-      envVars.push(`ALI_ENABLED=false`);
-    }
-    
-    // 腾讯云配置
-    if (config.tencentEnabled) {
-      envVars.push(`TENCENT_ENABLED=true`);
-      if (config.tencentSecretId) envVars.push(`TENCENT_SECRET_ID=${config.tencentSecretId}`);
-      if (config.tencentSecretKey) envVars.push(`TENCENT_SECRET_KEY=${config.tencentSecretKey}`);
-      if (config.tencentEndpoint) envVars.push(`TENCENT_ENDPOINT=${config.tencentEndpoint}`);
-      if (config.tencentPlanType) envVars.push(`TENCENT_PLAN_TYPE=${config.tencentPlanType}`);
-    } else {
-      envVars.push(`TENCENT_ENABLED=false`);
-    }
-    
-    // 百度配置
-    if (config.baiduEnabled) {
-      envVars.push(`BAIDU_ENABLED=true`);
-      if (config.baiduApiKey) envVars.push(`BAIDU_API_KEY=${config.baiduApiKey}`);
-      if (config.baiduSecretKey) envVars.push(`BAIDU_SECRET_KEY=${config.baiduSecretKey}`);
-      if (config.baiduEndpoint) envVars.push(`BAIDU_ENDPOINT=${config.baiduEndpoint}`);
-      if (config.baiduPlanType) envVars.push(`BAIDU_PLAN_TYPE=${config.baiduPlanType}`);
-    } else {
-      envVars.push(`BAIDU_ENABLED=false`);
-    }
-    
-    // 自定义配置
-    if (config.customEnabled) {
-      envVars.push(`CUSTOM_ENABLED=true`);
-      if (config.customApiKey) envVars.push(`CUSTOM_API_KEY=${config.customApiKey}`);
-      if (config.customEndpoint) envVars.push(`CUSTOM_ENDPOINT=${config.customEndpoint}`);
-      if (config.customPlanType) envVars.push(`CUSTOM_PLAN_TYPE=${config.customPlanType}`);
-    } else {
-      envVars.push(`CUSTOM_ENABLED=false`);
-    }
-    
-    return envVars.join('\n');
-  };
 
   // 加载设置
   const loadSettings = async () => {
     try {
-      // 优先从localStorage加载配置
-      const storedConfig = loadConfigFromStorage() || getDefaultSettings();
-      
-      setSettings(storedConfig);
-      
       // 设置表单初始值
       form.setFieldsValue({
-        model: storedConfig.model || 'qwen-max',
-        temperature: storedConfig.temperature || 0.7,
-        autoSave: storedConfig.autoSave !== false, // 默认为true
-        workflowStartStage: storedConfig.workflowStartStage || 'requirements',
-        qualityThreshold: storedConfig.qualityThreshold || 90,
-        cliPath: storedConfig.cliPath || './scripts/agency-cli.js',
-        outputDir: storedConfig.outputDir || './output'
+        model: 'qwen-max',
+        temperature: 0.7,
+        autoSave: true,
+        workflowStartStage: 'requirements',
+        qualityThreshold: 90,
+        cliPath: './scripts/agency-cli.js',
+        outputDir: './output'
       });
       
       robotForm.setFieldsValue({
-        dingtalkEnabled: storedConfig.dingtalkEnabled || false,
-        dingtalkToken: storedConfig.dingtalkToken || '',
-        dingtalkSecret: storedConfig.dingtalkSecret || '',
-        feishuEnabled: storedConfig.feishuEnabled || false,
-        feishuToken: storedConfig.feishuToken || '',
-        feishuSecret: storedConfig.feishuSecret || ''
+        dingtalkEnabled: false,
+        dingtalkToken: '',
+        dingtalkSecret: '',
+        feishuEnabled: false,
+        feishuToken: '',
+        feishuSecret: ''
       });
       
-      // 设置LLM表单值和状态
+      // 从服务器加载 Coding Plan 配置
+      let serverLlmConfig = null;
+      try {
+        const response = await configApi.getCodingPlanConfig();
+        serverLlmConfig = response.data;
+        console.log('从服务器加载 Coding Plan 配置成功', serverLlmConfig);
+      } catch (e) {
+        console.warn('从服务器加载配置失败，使用默认值:', e.message);
+      }
+      
+      // 设置 LLM 配置
       const llmSettings = {
-        aliEnabled: storedConfig.aliEnabled || false,
-        aliApiKey: storedConfig.aliApiKey || '',
-        aliEndpoint: storedConfig.aliEndpoint || 'https://coding.dashscope.aliyuncs.com/v1',
-        aliPlanType: storedConfig.aliPlanType || 'qwen-coder-plus',
-        tencentEnabled: storedConfig.tencentEnabled || false,
-        tencentSecretId: storedConfig.tencentSecretId || '',
-        tencentSecretKey: storedConfig.tencentSecretKey || '',
-        tencentEndpoint: storedConfig.tencentEndpoint || 'https://hunyuan.tencentcloudapi.com',
-        tencentPlanType: storedConfig.tencentPlanType || 'hunyuan-code-pro',
-        baiduEnabled: storedConfig.baiduEnabled || false,
-        baiduApiKey: storedConfig.baiduApiKey || '',
-        baiduSecretKey: storedConfig.baiduSecretKey || '',
-        baiduEndpoint: storedConfig.baiduEndpoint || 'https://aip.baidubce.com/rpc/2.0/ai_custom/v1',
-        baiduPlanType: storedConfig.baiduPlanType || 'ernie-bot-code-pro',
-        customEnabled: storedConfig.customEnabled || false,
-        customPlatformName: storedConfig.customPlatformName || '',
-        customApiKey: storedConfig.customApiKey || '',
-        customEndpoint: storedConfig.customEndpoint || '',
-        customPlanType: storedConfig.customPlanType || ''
+        aliEnabled: serverLlmConfig?.ali?.enabled ?? false,
+        aliApiKey: serverLlmConfig?.ali?.apiKey || '',
+        aliEndpoint: serverLlmConfig?.ali?.endpoint || 'https://dashscope.aliyuncs.com/api/v1',
+        aliPlanType: serverLlmConfig?.ali?.planType || 'qwen-coder-plus',
+        tencentEnabled: serverLlmConfig?.tencent?.enabled ?? false,
+        tencentSecretId: serverLlmConfig?.tencent?.secretId || '',
+        tencentSecretKey: serverLlmConfig?.tencent?.secretKey || '',
+        tencentEndpoint: serverLlmConfig?.tencent?.endpoint || 'https://hunyuan.tencentcloudapi.com',
+        tencentPlanType: serverLlmConfig?.tencent?.planType || 'hunyuan-code-pro',
+        baiduEnabled: serverLlmConfig?.baidu?.enabled ?? false,
+        baiduApiKey: serverLlmConfig?.baidu?.apiKey || '',
+        baiduSecretKey: serverLlmConfig?.baidu?.secretKey || '',
+        baiduEndpoint: serverLlmConfig?.baidu?.endpoint || 'https://aip.baidubce.com/rpc/2.0/ai_custom/v1',
+        baiduPlanType: serverLlmConfig?.baidu?.planType || 'ernie-bot-code-pro',
+        customEnabled: serverLlmConfig?.custom?.enabled ?? false,
+        customPlatformName: serverLlmConfig?.custom?.platformName || '',
+        customApiKey: serverLlmConfig?.custom?.apiKey || '',
+        customEndpoint: serverLlmConfig?.custom?.endpoint || '',
+        customPlanType: serverLlmConfig?.custom?.planType || ''
       };
       
+      console.log('设置 LLM 表单值:', llmSettings);
       llmForm.setFieldsValue(llmSettings);
       setAliEnabled(llmSettings.aliEnabled);
       setTencentEnabled(llmSettings.tencentEnabled);
       setBaiduEnabled(llmSettings.baiduEnabled);
       setCustomEnabled(llmSettings.customEnabled);
+      
+      // 添加延迟确保表单更新
+      setTimeout(() => {
+        console.log('LLM 表单当前值:', llmForm.getFieldsValue());
+      }, 100);
     } catch (error) {
       console.error('加载设置失败:', error);
       message.error('加载设置失败，使用默认值');
-      
-      // 设置默认值
-      const defaultSettings = getDefaultSettings();
-      const defaultRobot = getDefaultRobotSettings();
-      const defaultLlm = getDefaultLlmSettings();
-      
-      setSettings({...defaultSettings, ...defaultRobot, ...defaultLlm});
-      form.setFieldsValue(defaultSettings);
-      robotForm.setFieldsValue(defaultRobot);
-      llmForm.setFieldsValue(defaultLlm);
-      setAliEnabled(defaultLlm.aliEnabled);
-      setTencentEnabled(defaultLlm.tencentEnabled);
-      setBaiduEnabled(defaultLlm.baiduEnabled);
-      setCustomEnabled(defaultLlm.customEnabled);
     }
   };
-
-  // 获取默认设置
-  const getDefaultSettings = () => ({
-    model: 'qwen-max',
-    temperature: 0.7,
-    autoSave: true,
-    workflowStartStage: 'requirements',
-    qualityThreshold: 90,
-    cliPath: './scripts/agency-cli.js',
-    outputDir: './output'
-  });
-
-  const getDefaultRobotSettings = () => ({
-    dingtalkEnabled: false,
-    dingtalkToken: '',
-    dingtalkSecret: '',
-    feishuEnabled: false,
-    feishuToken: '',
-    feishuSecret: ''
-  });
-
-  const getDefaultLlmSettings = () => ({
-    aliEnabled: false,
-    aliApiKey: '',
-    aliEndpoint: 'https://coding.dashscope.aliyuncs.com/v1',
-    aliPlanType: 'qwen-coder-plus',
-    tencentEnabled: false,
-    tencentSecretId: '',
-    tencentSecretKey: '',
-    tencentEndpoint: 'https://hunyuan.tencentcloudapi.com',
-    tencentPlanType: 'hunyuan-code-pro',
-    baiduEnabled: false,
-    baiduApiKey: '',
-    baiduSecretKey: '',
-    baiduEndpoint: 'https://aip.baidubce.com/rpc/2.0/ai_custom/v1',
-    baiduPlanType: 'ernie-bot-code-pro',
-    customEnabled: false,
-    customPlatformName: '',
-    customApiKey: '',
-    customEndpoint: '',
-    customPlanType: ''
-  });
 
   // 保存设置
   const onFinish = async (values) => {
     try {
       const newSettings = {...settings, ...values};
       setSettings(newSettings);
-      
-      if (saveConfigToStorage(newSettings)) {
-        message.success('设置已保存');
-      } else {
-        message.error('保存设置失败，请检查浏览器设置');
-      }
+      message.success('设置已保存');
     } catch (error) {
       console.error('保存设置失败:', error);
       message.error('保存设置失败');
@@ -239,47 +112,61 @@ const SettingsPage = () => {
     try {
       const newSettings = {...settings, ...values};
       setSettings(newSettings);
-      
-      if (saveConfigToStorage(newSettings)) {
-        message.success('机器人配置已保存');
-      } else {
-        message.error('保存机器人配置失败，请检查浏览器设置');
-      }
+      message.success('机器人配置已保存');
     } catch (error) {
       console.error('保存机器人配置失败:', error);
       message.error('保存机器人配置失败');
     }
   };
 
-  // 保存大模型配置
+  // 保存大模型配置 - 只保存到服务器
   const onLlmFinish = async (values) => {
     try {
       const newSettings = {...settings, ...values};
       setSettings(newSettings);
       
-      if (saveConfigToStorage(newSettings)) {
-        message.success('大模型配置已保存');
-        
-        // 生成环境变量并显示指南
-        const envVars = generateEnvVariables(values);
-        setEnvVariables(envVars);
-        setShowEnvGuide(true);
-      } else {
-        message.error('保存大模型配置失败，请检查浏览器设置');
-      }
+      // 构建服务器配置格式
+      const serverConfig = {
+        ali: {
+          enabled: values.aliEnabled || false,
+          apiKey: values.aliApiKey || '',
+          endpoint: values.aliEndpoint || 'https://dashscope.aliyuncs.com/api/v1',
+          planType: values.aliPlanType || 'qwen-coder-plus'
+        },
+        tencent: {
+          enabled: values.tencentEnabled || false,
+          secretId: values.tencentSecretId || '',
+          secretKey: values.tencentSecretKey || '',
+          endpoint: values.tencentEndpoint || 'https://hunyuan.tencentcloudapi.com',
+          planType: values.tencentPlanType || 'hunyuan-code-pro'
+        },
+        baidu: {
+          enabled: values.baiduEnabled || false,
+          apiKey: values.baiduApiKey || '',
+          secretKey: values.baiduSecretKey || '',
+          endpoint: values.baiduEndpoint || 'https://aip.baidubce.com/rpc/2.0/ai_custom/v1',
+          planType: values.baiduPlanType || 'ernie-bot-code-pro'
+        },
+        custom: {
+          enabled: values.customEnabled || false,
+          platformName: values.customPlatformName || '',
+          apiKey: values.customApiKey || '',
+          endpoint: values.customEndpoint || '',
+          planType: values.customPlanType || ''
+        }
+      };
+      
+      // 保存到服务器
+      await configApi.saveCodingPlanConfig(serverConfig);
+      message.success('大模型配置已保存到服务器');
+      
+      // 保存后立即重新加载配置，以确保界面显示正确
+      setTimeout(() => {
+        loadSettings();
+      }, 500);
     } catch (error) {
       console.error('保存大模型配置失败:', error);
-      message.error('保存大模型配置失败');
-    }
-  };
-
-  // 复制环境变量到剪贴板
-  const copyEnvVariables = async () => {
-    try {
-      await navigator.clipboard.writeText(envVariables);
-      message.success('环境变量已复制到剪贴板');
-    } catch (error) {
-      message.error('复制失败，请手动复制');
+      message.error('保存大模型配置失败: ' + error.message);
     }
   };
 
@@ -302,7 +189,7 @@ const SettingsPage = () => {
 
   useEffect(() => {
     loadSettings();
-  }, []);
+  }, [activeTab]); // 当标签页改变时也重新加载配置
 
   return (
     <div>
@@ -345,48 +232,6 @@ const SettingsPage = () => {
           }
         ]}
       />
-      
-      {/* 环境变量设置指南模态框 */}
-      <Modal
-        title="环境变量设置指南"
-        open={showEnvGuide}
-        onCancel={() => setShowEnvGuide(false)}
-        footer={[
-          <Button key="copy" type="primary" icon={<CopyOutlined />} onClick={copyEnvVariables}>
-            复制到剪贴板
-          </Button>,
-          <Button key="ok" type="primary" onClick={() => setShowEnvGuide(false)}>
-            确定
-          </Button>
-        ]}
-        width={600}
-      >
-        <Alert
-          message="重要提示"
-          description="为了使大模型配置生效，您需要将以下环境变量添加到您的系统中，然后重启服务器。"
-          type="warning"
-          showIcon
-          style={{ marginBottom: 16 }}
-        />
-        <div style={{ 
-          backgroundColor: '#f5f5f5', 
-          padding: 12, 
-          borderRadius: 4, 
-          fontFamily: 'monospace',
-          maxHeight: 300,
-          overflow: 'auto'
-        }}>
-          {envVariables}
-        </div>
-        <div style={{ marginTop: 16 }}>
-          <h4>设置方法：</h4>
-          <ul>
-            <li><strong>Windows</strong>: 在命令行中使用 <code>set 变量名=值</code> 或创建 .env 文件</li>
-            <li><strong>Linux/Mac</strong>: 在终端中使用 <code>export 变量名=값</code> 或创建 .env 文件</li>
-            <li><strong>Docker</strong>: 在 docker run 命令中使用 <code>-e 变量명=값</code></li>
-          </ul>
-        </div>
-      </Modal>
     </div>
   );
 };
@@ -549,142 +394,193 @@ const CodingPlanSettings = ({
   setBaiduEnabled,
   customEnabled,
   setCustomEnabled
-}) => (
-  <Card>
-    <Alert
-      message="Coding Plan 配置"
-      description="配置各大厂的编码专用套餐（Coding Plan），支持阿里云、腾讯云、百度等主流平台。"
-      type="info"
-      showIcon
-      style={{ marginBottom: 24 }}
-    />
-    
-    <Form form={form} layout="vertical" onFinish={onFinish}>
-      <Divider orientation="left">阿里云百炼 - 通义千问 Coding Plan</Divider>
+}) => {
+  // 状态管理，用于跟踪各个API密钥的显示状态
+  const [showAliApiKey, setShowAliApiKey] = useState(false);
+  const [showTencentSecretId, setShowTencentSecretId] = useState(false);
+  const [showTencentSecretKey, setShowTencentSecretKey] = useState(false);
+  const [showBaiduApiKey, setShowBaiduApiKey] = useState(false);
+  const [showBaiduSecretKey, setShowBaiduSecretKey] = useState(false);
+  const [showCustomApiKey, setShowCustomApiKey] = useState(false);
+
+  return (
+    <Card>
+      <Alert
+        message="Coding Plan 配置"
+        description="配置各大厂的编码专用套餐（Coding Plan），支持阿里云、腾讯云、百度等主流平台。"
+        type="info"
+        showIcon
+        style={{ marginBottom: 24 }}
+      />
       
-      <Form.Item label="启用" name="aliEnabled" valuePropName="checked">
-        <Switch 
-          checked={aliEnabled}
-          onChange={setAliEnabled}
-        />
-      </Form.Item>
+      <Form form={form} layout="vertical" onFinish={onFinish}>
+        <Divider orientation="left">阿里云百炼 - 通义千问 Coding Plan</Divider>
+        
+        <Form.Item label="启用" name="aliEnabled" valuePropName="checked">
+          <Switch 
+            checked={aliEnabled}
+            onChange={setAliEnabled}
+          />
+        </Form.Item>
 
-      <Form.Item label="API Key" name="aliApiKey" tooltip="在阿里云百炼平台获取的 API Key">
-        <Input.Password placeholder="请输入阿里云 API Key" disabled={!aliEnabled} />
-      </Form.Item>
+        <Form.Item label="API Key" name="aliApiKey" tooltip="在阿里云百炼平台获取的 API Key">
+          <Input.Password 
+            placeholder="请输入阿里云 API Key" 
+            disabled={!aliEnabled} 
+            visibilityToggle={{
+              visible: showAliApiKey,
+              onVisibleChange: setShowAliApiKey
+            }}
+          />
+        </Form.Item>
 
-      <Form.Item 
-        label="Base URL" 
-        name="aliEndpoint" 
-        initialValue="https://coding.dashscope.aliyuncs.com/v1"
-        tooltip="阿里云百炼 Coding Plan 的基础URL"
-      >
-        <Input 
-          placeholder="https://coding.dashscope.aliyuncs.com/v1" 
-          disabled={!aliEnabled} 
-        />
-      </Form.Item>
+        <Form.Item 
+          label="Base URL" 
+          name="aliEndpoint" 
+          tooltip="阿里云百炼 Coding Plan 的基础URL"
+        >
+          <Input 
+            placeholder="https://dashscope.aliyuncs.com/v1" 
+            disabled={!aliEnabled} 
+          />
+        </Form.Item>
 
-      <Form.Item 
-        label="模型名称" 
-        name="aliPlanType" 
-        tooltip="输入具体的 Coding Plan 模型名称，如 qwen-coder-plus、qwen-coder-turbo 等"
-      >
-        <Input 
-          placeholder="例如：qwen-coder-plus" 
-          disabled={!aliEnabled} 
-        />
-      </Form.Item>
+        <Form.Item 
+          label="模型名称" 
+          name="aliPlanType" 
+          tooltip="输入具体的 Coding Plan 模型名称，如 qwen-coder-plus、qwen-coder-turbo 等"
+        >
+          <Input 
+            placeholder="例如：qwen-coder-plus" 
+            disabled={!aliEnabled} 
+          />
+        </Form.Item>
 
-      <Divider orientation="left">腾讯云智能创作 - 混元 Coding Plan</Divider>
-      
-      <Form.Item label="启用" name="tencentEnabled" valuePropName="checked">
-        <Switch 
-          checked={tencentEnabled}
-          onChange={setTencentEnabled}
-        />
-      </Form.Item>
+        <Divider orientation="left">腾讯云智能创作 - 混元 Coding Plan</Divider>
+        
+        <Form.Item label="启用" name="tencentEnabled" valuePropName="checked">
+          <Switch 
+            checked={tencentEnabled}
+            onChange={setTencentEnabled}
+          />
+        </Form.Item>
 
-      <Form.Item label="SecretId" name="tencentSecretId" tooltip="在腾讯云控制台获取的 SecretId">
-        <Input.Password placeholder="请输入腾讯云 SecretId" disabled={!tencentEnabled} />
-      </Form.Item>
+        <Form.Item label="SecretId" name="tencentSecretId" tooltip="在腾讯云控制台获取的 SecretId">
+          <Input.Password 
+            placeholder="请输入腾讯云 SecretId" 
+            disabled={!tencentEnabled}
+            visibilityToggle={{
+              visible: showTencentSecretId,
+              onVisibleChange: setShowTencentSecretId
+            }}
+          />
+        </Form.Item>
 
-      <Form.Item label="SecretKey" name="tencentSecretKey" tooltip="在腾讯云控制台获取的 SecretKey">
-        <Input.Password placeholder="请输入腾讯云 SecretKey" disabled={!tencentEnabled} />
-      </Form.Item>
+        <Form.Item label="SecretKey" name="tencentSecretKey" tooltip="在腾讯云控制台获取的 SecretKey">
+          <Input.Password 
+            placeholder="请输入腾讯云 SecretKey" 
+            disabled={!tencentEnabled}
+            visibilityToggle={{
+              visible: showTencentSecretKey,
+              onVisibleChange: setShowTencentSecretKey
+            }}
+          />
+        </Form.Item>
 
-      <Form.Item label="API Endpoint" name="tencentEndpoint" initialValue="https://hunyuan.tencentcloudapi.com">
-        <Input placeholder="https://hunyuan.tencentcloudapi.com" disabled={!tencentEnabled} />
-      </Form.Item>
+        <Form.Item label="API Endpoint" name="tencentEndpoint">
+          <Input placeholder="https://hunyuan.tencentcloudapi.com" disabled={!tencentEnabled} />
+        </Form.Item>
 
-      <Form.Item label="套餐类型" name="tencentPlanType" tooltip="选择混元 Coding Plan 类型">
-        <Select disabled={!tencentEnabled}>
-          <Select.Option value="hunyuan-code-pro">HunYuan-Code-Pro (混元代码专业版)</Select.Option>
-          <Select.Option value="hunyuan-code-lite">HunYuan-Code-Lite (混元代码轻量版)</Select.Option>
-        </Select>
-      </Form.Item>
+        <Form.Item label="套餐类型" name="tencentPlanType" tooltip="选择混元 Coding Plan 类型">
+          <Select disabled={!tencentEnabled}>
+            <Select.Option value="hunyuan-code-pro">HunYuan-Code-Pro (混元代码专业版)</Select.Option>
+            <Select.Option value="hunyuan-code-lite">HunYuan-Code-Lite (混元代码轻量版)</Select.Option>
+          </Select>
+        </Form.Item>
 
-      <Divider orientation="left">百度智能云千帆 - 文心一言 Coding Plan</Divider>
-      
-      <Form.Item label="启用" name="baiduEnabled" valuePropName="checked">
-        <Switch 
-          checked={baiduEnabled}
-          onChange={setBaiduEnabled}
-        />
-      </Form.Item>
+        <Divider orientation="left">百度智能云千帆 - 文心一言 Coding Plan</Divider>
+        
+        <Form.Item label="启用" name="baiduEnabled" valuePropName="checked">
+          <Switch 
+            checked={baiduEnabled}
+            onChange={setBaiduEnabled}
+          />
+        </Form.Item>
 
-      <Form.Item label="API Key" name="baiduApiKey" tooltip="在百度智能云千帆平台获取的 API Key">
-        <Input.Password placeholder="请输入百度云 API Key" disabled={!baiduEnabled} />
-      </Form.Item>
+        <Form.Item label="API Key" name="baiduApiKey" tooltip="在百度智能云千帆平台获取的 API Key">
+          <Input.Password 
+            placeholder="请输入百度云 API Key" 
+            disabled={!baiduEnabled}
+            visibilityToggle={{
+              visible: showBaiduApiKey,
+              onVisibleChange: setShowBaiduApiKey
+            }}
+          />
+        </Form.Item>
 
-      <Form.Item label="Secret Key" name="baiduSecretKey" tooltip="在百度智能云千帆平台获取的 Secret Key">
-        <Input.Password placeholder="请输入百度云 Secret Key" disabled={!baiduEnabled} />
-      </Form.Item>
+        <Form.Item label="Secret Key" name="baiduSecretKey" tooltip="在百度智能云千帆平台获取的 SecretKey">
+          <Input.Password 
+            placeholder="请输入百度云 SecretKey" 
+            disabled={!baiduEnabled}
+            visibilityToggle={{
+              visible: showBaiduSecretKey,
+              onVisibleChange: setShowBaiduSecretKey
+            }}
+          />
+        </Form.Item>
 
-      <Form.Item label="API Endpoint" name="baiduEndpoint" initialValue="https://aip.baidubce.com/rpc/2.0/ai_custom/v1">
-        <Input placeholder="https://aip.baidubce.com/rpc/2.0/ai_custom/v1" disabled={!baiduEnabled} />
-      </Form.Item>
+        <Form.Item label="API Endpoint" name="baiduEndpoint">
+          <Input placeholder="https://aip.baidubce.com/rpc/2.0/ai_custom/v1" disabled={!baiduEnabled} />
+        </Form.Item>
 
-      <Form.Item label="套餐类型" name="baiduPlanType" tooltip="选择文心一言 Coding Plan 类型">
-        <Select disabled={!baiduEnabled}>
-          <Select.Option value="ernie-bot-code-pro">ERNIE-Bot-Code-Pro (文心快码专业版)</Select.Option>
-          <Select.Option value="ernie-bot-code-lite">ERNIE-Bot-Code-Lite (文心快码轻量版)</Select.Option>
-        </Select>
-      </Form.Item>
+        <Form.Item label="套餐类型" name="baiduPlanType" tooltip="选择文心一言 Coding Plan 类型">
+          <Select disabled={!baiduEnabled}>
+            <Select.Option value="ernie-bot-code-pro">ERNIE-Bot-Code-Pro (文心快码专业版)</Select.Option>
+            <Select.Option value="ernie-bot-code-lite">ERNIE-Bot-Code-Lite (文心快码轻量版)</Select.Option>
+          </Select>
+        </Form.Item>
 
-      <Divider orientation="left">其他厂商 - 自定义 Coding Plan</Divider>
-      
-      <Form.Item label="启用" name="customEnabled" valuePropName="checked">
-        <Switch 
-          checked={customEnabled}
-          onChange={setCustomEnabled}
-        />
-      </Form.Item>
+        <Divider orientation="left">其他厂商 - 自定义 Coding Plan</Divider>
+        
+        <Form.Item label="启用" name="customEnabled" valuePropName="checked">
+          <Switch 
+            checked={customEnabled}
+            onChange={setCustomEnabled}
+          />
+        </Form.Item>
 
-      <Form.Item label="平台名称" name="customPlatformName" tooltip="Coding Plan 平台名称">
-        <Input placeholder="例如：讯飞星火、智谱 AI 等" disabled={!customEnabled} />
-      </Form.Item>
+        <Form.Item label="平台名称" name="customPlatformName" tooltip="Coding Plan 平台名称">
+          <Input placeholder="例如：讯飞星火、智谱 AI 等" disabled={!customEnabled} />
+        </Form.Item>
 
-      <Form.Item label="API Key" name="customApiKey" tooltip="该平台提供的 API Key 或等效凭证">
-        <Input.Password placeholder="请输入 API Key" disabled={!customEnabled} />
-      </Form.Item>
+        <Form.Item label="API Key" name="customApiKey" tooltip="该平台提供的 API Key 或等效凭证">
+          <Input.Password 
+            placeholder="请输入 API Key" 
+            disabled={!customEnabled}
+            visibilityToggle={{
+              visible: showCustomApiKey,
+              onVisibleChange: setShowCustomApiKey
+            }}
+          />
+        </Form.Item>
 
-      <Form.Item label="API Endpoint" name="customEndpoint" tooltip="该平台的 API 端点地址">
-        <Input placeholder="请输入 API Endpoint" disabled={!customEnabled} />
-      </Form.Item>
+        <Form.Item label="API Endpoint" name="customEndpoint" tooltip="该平台的 API 端点地址">
+          <Input placeholder="请输入 API Endpoint" disabled={!customEnabled} />
+        </Form.Item>
 
-      <Form.Item label="套餐类型" name="customPlanType" tooltip="该平台的 Coding Plan 名称">
-        <Input placeholder="请输入套餐类型名称" disabled={!customEnabled} />
-      </Form.Item>
+        <Form.Item label="套餐类型" name="customPlanType" tooltip="该平台的 Coding Plan 名称">
+          <Input placeholder="请输入套餐类型名称" disabled={!customEnabled} />
+        </Form.Item>
 
-      <Form.Item style={{ marginTop: 24 }}>
-        <Button type="primary" htmlType="submit" size="large">
-          保存 Coding Plan 配置
-        </Button>
-      </Form.Item>
-    </Form>
-  </Card>
-);
+        <Form.Item style={{ marginTop: 24 }}>
+          <Button type="primary" htmlType="submit" size="large">
+            保存 Coding Plan 配置
+          </Button>
+        </Form.Item>
+      </Form>
+    </Card>
+  );
+};
 
 // ==================== 安全配置组件 ====================
 const SecuritySettings = () => (

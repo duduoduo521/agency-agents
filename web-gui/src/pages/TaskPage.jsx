@@ -78,9 +78,9 @@ const navigate = useNavigate();
 
    try {
      const taskData = {
-       command: values.command,
-       description: values.description,
-       techStack: values.techStack || [],
+       command: "create-feature", // 默认命令
+       params: values.description, // 使用描述作为参数
+       options: {}, // 空选项对象
        status: 'pending',
        progress: 0
      };
@@ -144,11 +144,23 @@ const navigate = useNavigate();
    
    try {
     // 使用下载链接
-    window.open(`http://localhost:3000${task.zipUrl}`, '_blank');
+    window.open(task.zipUrl, '_blank');
     message.success('下载已开始！');
    } catch (error) {
     message.error('下载失败');
     }
+ };
+
+ // 终止任务
+ const terminateTask = async (taskId) => {
+   try {
+     await taskApi.terminateTask(taskId);
+     message.success('任务已终止');
+     fetchTasks();
+   } catch (error) {
+     message.error('终止任务失败');
+     console.error('终止任务失败:', error);
+   }
  };
 
  // 删除任务
@@ -249,6 +261,19 @@ const navigate = useNavigate();
             >
               下载
             </Button>
+          )}
+          {(record.status === 'analyzing' || record.status === 'designing' || record.status === 'coding' || record.status === 'testing' || record.status === 'reviewing') && (
+            <Tooltip title="终止任务">
+              <Button
+                type="link"
+                size="small"
+                danger
+                icon={<CloseCircleOutlined />}
+                onClick={() => terminateTask(record.id)}
+              >
+                终止
+              </Button>
+            </Tooltip>
           )}
           {record.status === 'failed' && (
             <Button
@@ -359,40 +384,14 @@ const navigate = useNavigate();
      >
        <Form form={createForm} layout="vertical" onFinish={handleCreateTask}>
          <Form.Item
-          label="命令类型"
-           name="command"
-           rules={[{ required: true, message: '请选择命令类型' }]}
-         >
-           <Select>
-             <Select.Option value="create-feature">创建功能</Select.Option>
-             <Select.Option value="fix-bug">修复 Bug</Select.Option>
-             <Select.Option value="refactor-code">重构代码</Select.Option>
-             <Select.Option value="add-test">添加测试</Select.Option>
-           </Select>
-         </Form.Item>
-
-         <Form.Item
-          label="任务描述"
+          label="项目描述"
            name="description"
-           rules={[{ required: true, message: '请输入任务描述' }]}
+           rules={[{ required: true, message: '请输入项目描述' }]}
          >
            <TextArea 
              rows={4} 
-             placeholder="例如：制作一个 HTML5 赛车小游戏，包含起点、终点和障碍物..."
+             placeholder="请输入项目描述，例如：制作一个 HTML5 赛车小游戏，包含起点、终点和障碍物..."
            />
-         </Form.Item>
-
-         <Form.Item
-          label="技术栈偏好"
-           name="techStack"
-         >
-           <Select mode="multiple" placeholder="选择技术栈偏好（可选）">
-             <Select.Option value="react">React</Select.Option>
-             <Select.Option value="vue">Vue</Select.Option>
-             <Select.Option value="node">Node.js</Select.Option>
-             <Select.Option value="python">Python</Select.Option>
-             <Select.Option value="html5">HTML5</Select.Option>
-           </Select>
          </Form.Item>
        </Form>
      </Modal>

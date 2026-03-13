@@ -1,0 +1,29 @@
+{
+  "ali": {
+    "enabled": true,
+    "apiKey": "sk-sp-3a9efc3c8adf430ea03ec820c062062b",
+    "endpoint": "https://coding.dashscope.aliyuncs.com/v1",
+    "planType": "qwen3-coder-next"
+  },
+  "tencent": {
+    "enabled": false,
+    "secretId": "",
+    "secretKey": "",
+    "endpoint": "https://hunyuan.tencentcloudapi.com",
+    "planType": "hunyuan-code-pro"
+  },
+  "baidu": {
+    "enabled": false,
+    "apiKey": "",
+    "secretKey": "",
+    "endpoint": "https://aip.baidubce.com/rpc/2.0/ai_custom/v1",
+    "planType": "ernie-bot-code-pro"
+  },
+  "custom": {
+    "enabled": false,
+    "apiKey": "",
+    "endpoint": "",
+    "planType": "",
+    "platformName": ""
+  }
+}

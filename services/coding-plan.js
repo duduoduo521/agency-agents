@@ -32,39 +32,95 @@ class CodingPlanService {
  }
 
  /**
-  * 调用阿里云百炼 API（通义千问）
+  * 调用阿里云百炼 API（通义千问）- 支持 OpenAI 兼容接口
   */
- async callAliyun(prompt, model= 'qwen-coder-plus') {
- const endpoint = this.config.ali.endpoint || 'https://dashscope.aliyuncs.com/api/v1';
-  
- try {
-  const response = await axios.post(
-     `${endpoint}/services/aigc/text-generation/generation`,
-    {
-      model,
-     input: {
-       messages: [
-         { role: 'system', content: '你是一个专业的 AI 编程助手，擅长编写高质量代码。' },
-        { role: 'user', content: prompt }
-       ]
-     },
-     parameters: {
-       temperature: 0.7,
-       max_tokens: 4096
-     }
-    },
-    {
-     headers: {
-       'Authorization': `Bearer ${this.config.ali.apiKey}`,
-       'Content-Type': 'application/json'
-     }
-    }
-   );
+ async callAliyun(prompt, model = 'qwen-coder-plus') {
+   const endpoint = this.config.ali.endpoint || 'https://dashscope.aliyuncs.com/api/v1';
+   // 使用配置中的 planType，如果没有则使用传入的 model 参数
+   const modelToUse = this.config.ali.planType || model;
    
-   return response.data.output.text;
- } catch (error) {
-   throw new Error(`阿里云 API 调用失败：${error.message}`);
- }
+   try {
+     // 根据 endpoint 类型确定 API 路径
+     let apiUrl;
+     if (endpoint.includes('coding.dashscope.aliyuncs.com')) {
+       // 针对 Coding Plan 的 OpenAI 兼容接口
+       apiUrl = `${endpoint}/chat/completions`;
+     } else if (endpoint.includes('dashscope.aliyuncs.com')) {
+       // 传统 DashScope 接口
+       apiUrl = `${endpoint}/services/aigc/text-generation/generation`;
+     } else {
+       // 默认使用 OpenAI 兼容接口
+       apiUrl = `${endpoint}/chat/completions`;
+     }
+     
+     // 根据 endpoint 类型选择请求和响应格式
+     let requestData, requestBody;
+     if (endpoint.includes('coding.dashscope.aliyuncs.com')) {
+       // OpenAI 兼容格式
+       requestData = {
+         model: modelToUse,
+         messages: [
+           { role: 'system', content: '你是一个专业的 AI 编程助手，擅长编写高质量代码。' },
+           { role: 'user', content: prompt }
+         ],
+         temperature: 0.7,
+         max_tokens: 4096
+       };
+       requestBody = requestData;
+     } else {
+       // 传统的阿里云格式
+       requestData = {
+         model: modelToUse,
+         input: {
+           messages: [
+             { role: 'system', content: '你是一个专业的 AI 编程助手，擅长编写高质量代码。' },
+             { role: 'user', content: prompt }
+           ]
+         },
+         parameters: {
+           temperature: 0.7,
+           max_tokens: 4096
+         }
+       };
+       requestBody = requestData;
+     }
+     
+     const response = await axios.post(
+       apiUrl,
+       requestBody,
+       {
+         headers: {
+           'Authorization': `Bearer ${this.config.ali.apiKey}`,
+           'Content-Type': 'application/json'
+         },
+         timeout: 60000 // 添加超时设置
+       }
+     );
+     
+     // 根据不同的 API 响应格式提取文本
+     if (endpoint.includes('coding.dashscope.aliyuncs.com')) {
+       // OpenAI 兼容响应格式
+       return response.data.choices[0]?.message?.content || response.data.choices[0]?.text || 'API响应格式不正确';
+     } else {
+       // 传统的阿里云响应格式
+       if (response.data.output && response.data.output.choices) {
+         return response.data.output.choices[0]?.message?.content || response.data.output.text;
+       } else if (response.data.output) {
+         return response.data.output.text;
+       } else {
+         throw new Error(`API 响应格式不正确: ${JSON.stringify(response.data)}`);
+       }
+     }
+   } catch (error) {
+     console.error('阿里云 API 错误详情:', error.response?.data || error.message);
+     // 如果是认证错误，提供更多细节
+     if (error.response?.status === 401) {
+       throw new Error(`阿里云 API 调用失败：认证失败，请检查 API Key 是否正确 - ${error.message}`);
+     } else if (error.response?.status === 404) {
+       throw new Error(`阿里云 API 调用失败：请求的接口不存在，请检查 endpoint 和 API 路径是否正确 - ${error.message}`);
+     }
+     throw new Error(`阿里云 API 调用失败：${error.message}`);
+   }
  }
 
  /**
@@ -284,11 +340,11 @@ class CodingPlanService {
   // 调用对应的 API
   switch (service) {
    case 'ali':
-    return await this.callAliyun(prompt, this.config.ali.planType);
+    return await this.callAliyun(prompt, this.config.ali.planType || 'qwen-coder-plus'); // 确保使用配置的 planType
    case'tencent':
-    return await this.callTencent(prompt, this.config.tencent.planType);
+    return await this.callTencent(prompt, this.config.tencent.planType || 'hunyuan-code-pro');
    case 'baidu':
-    return await this.callBaidu(prompt, this.config.baidu.planType);
+    return await this.callBaidu(prompt, this.config.baidu.planType || 'ernie-bot-code-pro');
    case 'custom':
     return await this.callCustom(prompt);
    default:
